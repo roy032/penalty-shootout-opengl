@@ -2,6 +2,7 @@ from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
 import math
+import sys
 
 # Camera-related variables (polar coordinates for gameplay view)
 cam_angle = 5
@@ -48,6 +49,7 @@ gk_reaction_delay = 250
 gk_reach_x = 2.5
 gk_reach_y = 2.0
 gk_guess_bias = 0.6  # chance to guess correct side
+ai_turn_delay_ms = 700
 
 # AI control flags
 ai_gk_action_pending = False
@@ -76,8 +78,12 @@ ball_move_start_ms = None
 gk_reaction_delay_ms = 220  # goalkeeper starts move after this delay once ball moves
 gk_dive_started = False
 
-def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
-    glColor3f(1,1,1)
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18, color=None):
+    # Uses the current color unless one is given; lighting would tint the raster color
+    if color is not None:
+        glColor3f(*color)
+    lighting_on = glIsEnabled(GL_LIGHTING)
+    glDisable(GL_LIGHTING)
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
@@ -92,6 +98,8 @@ def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
     glMatrixMode(GL_PROJECTION)
     glPopMatrix()
     glMatrixMode(GL_MODELVIEW)
+    if lighting_on:
+        glEnable(GL_LIGHTING)
 
 def draw_cube():
     glBegin(GL_QUADS)
@@ -323,19 +331,22 @@ def draw_ball():
 def keyboardListener(key, x, y):
     global ball_state, ball_target, goalkeeper_state, goalkeeper_target, current_turn
     global player1_score, player2_score, shots_taken, game_state, winner
-    global is_paused, _current_idle_func
+    global is_paused, _current_idle_func, _last_idle_ms
     global is_aiming, aim_target, accuracy_active, accuracy_phase, accuracy_dir
-    global ui_state, game_mode, difficulty, menu_focus
-    key = key.decode('utf-8')
+    global ui_state, game_mode, difficulty, menu_focus, current_shot_speed
+    key = key.decode('latin-1').lower()
 
     # Global controls
     if key in ['q', '\x1b']:
-        glutLeaveMainLoop()
+        if bool(glutLeaveMainLoop):
+            glutLeaveMainLoop()
+        else:  # glutLeaveMainLoop is freeglut-only
+            sys.exit(0)
         return
     if key == 'r':
         reset_game()
         return
-    if key == 'p':
+    if key == 'p' and ui_state == 'playing' and game_state != 'ended':
         # Toggle pause
         if not is_paused:
             is_paused = True
@@ -343,13 +354,9 @@ def keyboardListener(key, x, y):
             glutIdleFunc(None)
         else:
             is_paused = False
-            # Restore appropriate animation if something is moving; otherwise neutral idle
-            if ball_state == 'moving':
-                glutIdleFunc(update_ball)
-            elif goalkeeper_state == 'moving':
-                glutIdleFunc(update_goalkeeper)
-            else:
-                glutIdleFunc(idle)
+            # idle() steps the ball, goalkeeper and AI together; restart its clock
+            _last_idle_ms = None
+            glutIdleFunc(idle)
         glutPostRedisplay()
         return
 
@@ -360,7 +367,7 @@ def keyboardListener(key, x, y):
         elif key in ['a', 'd']:
             if menu_focus == 0:
                 game_mode = 'pvc' if (game_mode == 'pvp' and key == 'd') else ('pvp' if key == 'a' else game_mode)
-            elif menu_focus == 1:
+            elif menu_focus == 1 and game_mode == 'pvc':
                 order = ['easy','medium','hard']
                 idx = order.index(difficulty)
                 idx = (idx + (1 if key == 'd' else -1)) % len(order)
@@ -374,7 +381,7 @@ def keyboardListener(key, x, y):
         return
 
     # Ignore gameplay inputs when paused or game ended
-    if winner and key.lower() == 'm':
+    if winner and key == 'm':
         go_to_menu()
         return
     if is_paused or game_state == 'ended' or ui_state != 'playing':
@@ -391,8 +398,10 @@ def keyboardListener(key, x, y):
         elif key == 's':  # Top left corner
             ball_target = [-2.99, 3, -14.5]
         ball_state = 'moving'
-        _current_idle_func = update_ball
-        glutIdleFunc(update_ball)
+        current_shot_speed = compute_shot_speed_variation()
+        shot_history.append(('player1', ball_target[0], ball_target[1]))
+        _current_idle_func = idle
+        glutIdleFunc(idle)
     elif current_turn == 'player2_shoot' and key in ['w', 'a', 's', 'd'] and goalkeeper_state == 'ready' and (game_mode in ['pvp','pvc']):
         if key == 'a':  # Left side
             goalkeeper_target = [-2.5, 0, -12]
@@ -403,8 +412,8 @@ def keyboardListener(key, x, y):
         elif key == 's':  # Lower center
             goalkeeper_target = [0, 0, -12]
         goalkeeper_state = 'moving'
-        _current_idle_func = update_goalkeeper
-        glutIdleFunc(update_goalkeeper)
+        _current_idle_func = idle
+        glutIdleFunc(idle)
 
     # Player 2 controls (IJKL) — disabled in PvC (computer shoots as player2)
     elif current_turn == 'player2_shoot' and key in ['i', 'j', 'k', 'l'] and ball_state == 'ready' and game_mode == 'pvp':
@@ -417,8 +426,10 @@ def keyboardListener(key, x, y):
         elif key == 'k':  # Top left corner
             ball_target = [-2.99, 3, -14.5]
         ball_state = 'moving'
-        _current_idle_func = update_ball
-        glutIdleFunc(update_ball)
+        current_shot_speed = compute_shot_speed_variation()
+        shot_history.append(('player2', ball_target[0], ball_target[1]))
+        _current_idle_func = idle
+        glutIdleFunc(idle)
     # Player 2 GK controls (IJKL) — disabled in PvC (computer is GK vs player1 shooter)
     elif current_turn == 'player1_shoot' and key in ['i', 'j', 'k', 'l'] and goalkeeper_state == 'ready' and game_mode == 'pvp':
         if key == 'j':  # Left side
@@ -430,8 +441,8 @@ def keyboardListener(key, x, y):
         elif key == 'k':  # Lower center
             goalkeeper_target = [0, 0, -12]
         goalkeeper_state = 'moving'
-        _current_idle_func = update_goalkeeper
-        glutIdleFunc(update_goalkeeper)
+        _current_idle_func = idle
+        glutIdleFunc(idle)
 
 def update_ball():
     global ball_pos, ball_target, ball_state, player1_score, player2_score
@@ -479,8 +490,6 @@ def update_ball():
             player2_score += 1
             last_shot_by = 'player2'
         last_shot_result = 'G'
-        # record shot
-        shot_history.append(('player1' if current_turn=='player1_shoot' else 'player2', ball_target[0], ball_target[1]))
         # camera shake on goal
         trigger_camera_shake()
         end_turn()
@@ -532,7 +541,9 @@ def end_turn():
         last_shot_result = None
 
     # Schedule AI next action delay when switching to AI turn in PvC
-    global ai_next_action_ms
+    global ai_next_action_ms, ai_gk_wait_until_ms, gk_dive_started
+    ai_gk_wait_until_ms = None
+    gk_dive_started = False
     # Advance turn and count shots
     if current_turn == 'player1_shoot':
         shots_taken['player1'] += 1
@@ -604,7 +615,7 @@ def reset_game():
     global ball_move_start_ms, gk_dive_started
     global ui_state, game_mode, difficulty
     global ball_speed, gk_reaction_delay, gk_reach_x, gk_reach_y, gk_guess_bias
-    global ai_gk_wait_until_ms, current_shot_speed
+    global ai_gk_wait_until_ms, current_shot_speed, ai_next_action_ms
 
     cam_angle = 5
     cam_height = 5.0
@@ -643,13 +654,16 @@ def reset_game():
     glutIdleFunc(idle)
     glutPostRedisplay()
     ai_gk_wait_until_ms = None
+    ai_next_action_ms = None
     current_shot_speed = ball_speed
+    shot_history.clear()
 
 def go_to_menu():
-    global ui_state, winner, game_state
+    global ui_state, winner, game_state, is_paused
     ui_state = 'menu'
     winner = None
     game_state = 'normal'
+    is_paused = False
     glutIdleFunc(idle)
 
 def set_difficulty_params():
@@ -715,9 +729,9 @@ def specialKeyListener(key, x, y):
     elif key == GLUT_KEY_RIGHT:
         cam_angle += 5
     elif key == GLUT_KEY_UP:
-        cam_height += 0.5
+        cam_height = min(cam_height + 0.5, 20.0)
     elif key == GLUT_KEY_DOWN:
-        cam_height -= 0.5
+        cam_height = max(cam_height - 0.5, -5.0)  # keep the camera above the pitch
     elif key == GLUT_KEY_PAGE_UP:
         radius -= 1
         if radius < 5:
@@ -736,8 +750,10 @@ def mouseListener(button, state, x, y):
     global ui_state, game_mode, difficulty, menu_focus
     if ui_state != 'menu':
         return
-    # Convert GLUT window coords (top-left origin) to our ortho coords (bottom-left origin)
-    ox, oy = x, 800 - y
+    # Convert GLUT window coords (top-left origin) to our 1000x800 ortho coords (bottom-left origin)
+    win_w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    win_h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    ox, oy = x * 1000.0 / win_w, (win_h - y) * 800.0 / win_h
     if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
         layout = get_menu_layout()
         if point_in_rect(ox, oy, layout['btn_pvp']):
@@ -775,7 +791,9 @@ def mouseListener(button, state, x, y):
 def setupCamera():
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(60, 1.25, 1.0, 100.0)
+    win_w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    win_h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    gluPerspective(60, win_w / win_h, 1.0, 100.0)
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     cam_x = radius * math.sin(math.radians(cam_angle))
@@ -789,20 +807,33 @@ def setupCamera():
         cam_y += jitter * math.cos(t*37.0)
     gluLookAt(cam_x, cam_y, cam_z, 0, 1, -10, 0, 1, 0)
 
+SIM_STEP_MS = 1000.0 / 60.0  # fixed simulation rate so speeds do not depend on frame rate
+_last_idle_ms = None
+_sim_accum_ms = 0.0
+
 def idle():
     # Unified idle: drive AI and step animations concurrently
+    global _last_idle_ms, _sim_accum_ms
+    now = glutGet(GLUT_ELAPSED_TIME)
+    elapsed = 0 if _last_idle_ms is None else min(now - _last_idle_ms, 100)
+    _last_idle_ms = now
     if ui_state == 'playing' and game_state != 'ended' and not is_paused:
-        if game_mode == 'pvc':
-            run_ai()
-        if ball_state == 'moving':
-            update_ball()
-        if goalkeeper_state == 'moving':
-            update_goalkeeper()
+        _sim_accum_ms += elapsed
+        while _sim_accum_ms >= SIM_STEP_MS and game_state != 'ended':
+            _sim_accum_ms -= SIM_STEP_MS
+            if game_mode == 'pvc':
+                run_ai()
+            if ball_state == 'moving':
+                update_ball()
+            if goalkeeper_state == 'moving':
+                update_goalkeeper()
+    else:
+        _sim_accum_ms = 0.0
     glutPostRedisplay()
 
 def run_ai():
     global ball_state, _current_idle_func, current_shot_speed
-    global ai_gk_wait_until_ms, goalkeeper_state, ai_next_action_ms
+    global ai_gk_wait_until_ms, goalkeeper_state, ai_next_action_ms, gk_dive_started
     # AI acts only when it's the computer's turn in PvC
     # If shooter is computer
     if 'player2' in current_turn and game_mode == 'pvc':
@@ -835,10 +866,9 @@ def run_ai():
             glutIdleFunc(idle)
             return
         # If GK is computer on player1 shoot, bias dive after small delay handled by user input path
-    # If goalkeeper is computer during player1 shoot
-    if current_turn == 'player1_shoot' and game_mode == 'pvc':
+    # If goalkeeper is computer during player1 shoot: dive once, gk_reaction_delay ms after the kick
+    if current_turn == 'player1_shoot' and game_mode == 'pvc' and ball_state == 'moving' and not gk_dive_started:
         t_ms = glutGet(GLUT_ELAPSED_TIME)
-        global ai_gk_wait_until_ms
         if ai_gk_wait_until_ms is None:
             ai_gk_wait_until_ms = t_ms + gk_reaction_delay
         if t_ms >= ai_gk_wait_until_ms and goalkeeper_state == 'ready':
@@ -853,11 +883,13 @@ def run_ai():
             goalkeeper_target[0] = target_x
             goalkeeper_target[1] = target_y
             goalkeeper_state = 'moving'
+            gk_dive_started = True
             _current_idle_func = idle
             glutIdleFunc(idle)
             ai_gk_wait_until_ms = None
 
 def reshape(w, h):
+    h = max(1, h)  # avoid division by zero when minimized
     glViewport(0, 0, w, h)
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
@@ -968,7 +1000,6 @@ def draw_menu():
         draw_text(tx, ty, label, GLUT_BITMAP_HELVETICA_18)
 
     # vertical layout metrics
-    center_x = panel_x1 + panel_w//2
     row1_y = panel_y2 - 120
     row2_y = row1_y - 80
     row3_y = row2_y - 100
@@ -1072,15 +1103,15 @@ def draw_scoreboard():
 
     # Labels and aggregate score
     glColor3f(0.9, 0.1, 0.1)
-    draw_text(335, 772, f"PLAYER 1", GLUT_BITMAP_HELVETICA_12)
+    draw_text(335, 772, "PLAYER 1", GLUT_BITMAP_HELVETICA_12)
     glColor3f(1, 1, 1)
     draw_text(455, 772, f"{player1_score}", GLUT_BITMAP_HELVETICA_18)
     glColor3f(1, 1, 0.2)
-    draw_text(500, 772, f"-", GLUT_BITMAP_HELVETICA_18)
+    draw_text(500, 772, "-", GLUT_BITMAP_HELVETICA_18)
     glColor3f(1, 1, 1)
     draw_text(535, 772, f"{player2_score}", GLUT_BITMAP_HELVETICA_18)
     glColor3f(0.1, 0.3, 0.9)
-    draw_text(585, 772, f"PLAYER 2", GLUT_BITMAP_HELVETICA_12)
+    draw_text(585, 772, "PLAYER 2", GLUT_BITMAP_HELVETICA_12)
 
     # Mode/Difficulty indicator inside panel
     if ui_state == 'playing':
@@ -1155,7 +1186,7 @@ def point_in_rect(px, py, rect):
 def showScreen():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glLoadIdentity()
-    glViewport(0, 0, 1000, 800)
+    glViewport(0, 0, glutGet(GLUT_WINDOW_WIDTH), glutGet(GLUT_WINDOW_HEIGHT))
     setupCamera()
 
     if ui_state == 'playing':
@@ -1168,14 +1199,16 @@ def showScreen():
 
     # Display game info text at a fixed screen position
     if ui_state == 'playing':
-        draw_text(10, 710, f"Turn: {'Shooter' if 'shoot' in current_turn else 'Goalkeeper'} | {current_turn}")
+        shooter = 'Player 1' if current_turn == 'player1_shoot' else 'Player 2'
+        phase = ' (sudden death)' if game_state == 'sudden_death' else ''
+        draw_text(10, 710, f"Turn: {shooter} shoots{phase}", color=(1, 1, 1))
     elif ui_state == 'menu':
         draw_menu()
     if is_paused and not winner:
-        draw_text(400, 400, "Paused")
+        draw_text(400, 400, "Paused", color=(1, 1, 1))
     if winner:
-        draw_text(400, 420, f"Game Over! Winner: {winner}")
-        draw_text(360, 390, "Press M to return to Menu")
+        draw_text(400, 420, f"Game Over! Winner: {winner}", color=(1, 1, 1))
+        draw_text(360, 390, "Press M for menu, R to play again", color=(1, 1, 1))
 
     glutSwapBuffers()
 

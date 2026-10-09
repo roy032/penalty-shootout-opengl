@@ -1,56 +1,75 @@
-# Penalty Shootout — OpenGL Game
+# Penalty Shootout (OpenGL)
 
-A 3D penalty kick shootout game built with **Python** and **OpenGL (PyOpenGL + GLUT)**. Features PvP and PvC modes, an interactive aiming system, AI goalkeeper with adaptive difficulty, and a full match simulation with sudden death.
+A 3D penalty shootout game written in Python with PyOpenGL and GLUT. Supports two-player (PvP) and player-versus-computer (PvC) modes.
 
 ## Gameplay
 
-- **Player vs Player (PvP)** — Two players alternate between shooting and goalkeeping
-- **Player vs Computer (PvC)** — Play against an AI opponent with adjustable difficulty
-- **5 shots per player**, followed by sudden death if tied
-- Interactive aiming with accuracy mechanics and camera shake effects
+- **PvP**: two players on one keyboard take turns shooting and keeping goal.
+- **PvC**: Player 1 plays against a computer opponent that shoots and keeps goal, with Easy, Medium and Hard difficulty.
+- Each player takes 5 penalties. The match ends early once one side cannot be caught. If the score is level after 5 each, it goes to sudden death: the first player ahead after an equal number of kicks wins.
+- A shot is saved if the goalkeeper is in its path; otherwise it is a goal.
+
+## How to Run
+
+Requires Python 3.8+ and an OpenGL-capable system with GLUT (freeglut).
+
+```bash
+pip install -r requirements.txt
+python penalty_shootout.py
+```
+
+`PyOpenGL_accelerate` is optional and can be installed separately for better performance.
+
+**GLUT library**
+
+- Linux: install freeglut from your package manager, for example `sudo apt install freeglut3-dev` on Debian/Ubuntu.
+- Windows: the PyOpenGL package from pip does not include the GLUT DLL, so `glutInit` fails with `NullFunctionError`. Download a Windows build of freeglut and copy `freeglut.dll` (64-bit for 64-bit Python) next to `python.exe` or into `C:\Windows\System32`.
+- macOS: the system GLUT framework is used.
 
 ## Controls
 
+**Menu**
+
 | Key | Action |
 |-----|--------|
-| Arrow Keys | Aim the shot / Move goalkeeper |
-| Mouse Click | Confirm shot |
-| `P` | Pause / Resume |
-| `R` | Restart match |
-| `ESC` | Quit |
+| `W` / `S` | Move between Mode, Difficulty and Start |
+| `A` / `D` | Change the selected option (difficulty only in PvC) |
+| `Enter` / `Space` | Start the match |
+| Left mouse click | Select a button |
 
-## Features
+**Match**
 
-- 3D rendered football pitch, goal, ball, and players
-- Animated ball trajectory and goalkeeper dives
-- AI goalkeeper with configurable reaction time and reach
-- Adaptive difficulty (Easy / Medium / Hard)
-- Shot history tracking with scoreboard overlay
-- Camera system with polar coordinate controls
+| Key | Action |
+|-----|--------|
+| `A` / `D` / `W` / `S` | Player 1 shoots: bottom-left / bottom-right / top-right / top-left |
+| `J` / `L` / `I` / `K` | Player 2 shoots (PvP only): bottom-left / bottom-right / top-right / top-left |
+| `A` / `D` / `W` / `S` | Player 1 in goal (when Player 2 shoots): left / right / high centre / low centre |
+| `J` / `L` / `I` / `K` | Player 2 in goal (PvP only, when Player 1 shoots): left / right / high centre / low centre |
+| Left / Right arrow | Rotate camera |
+| Up / Down arrow | Raise / lower camera |
+| `Page Up` / `Page Down` | Zoom in / out |
+| `P` | Pause / resume |
+| `R` | Restart the match |
+| `M` | Return to menu (after the match ends) |
+| `Esc` / `Q` | Quit |
 
-## Difficulty Levels
+The goalkeeper can move before or during the kick. In PvC the computer keeps goal against Player 1 and shoots as Player 2.
+
+## Difficulty (PvC)
 
 | Parameter | Easy | Medium | Hard |
 |-----------|------|--------|------|
-| GK Reaction Delay | Slow | Medium | Fast |
-| GK Reach | Short | Medium | Wide |
-| GK Guess Accuracy | Low | Medium | High |
+| Ball speed | Slow | Medium | Fast |
+| Goalkeeper reaction delay | 350 ms | 250 ms | 150 ms |
+| Goalkeeper dive reach | Short | Medium | Wide |
+| Computer shot accuracy | Low | Medium | High |
 
-## Tech Stack
-
-- Python
-- PyOpenGL (OpenGL, GLUT, GLU)
+The computer goalkeeper also biases its dive towards the side Player 1 has shot to most often.
 
 ## Project Structure
 
 ```
 ├── README.md
-└── penalty_shootout.py    # Complete game source
-```
-
-## How to Run
-
-```bash
-pip install PyOpenGL PyOpenGL_accelerate
-python penalty_shootout.py
+├── requirements.txt
+└── penalty_shootout.py    # Game source
 ```
