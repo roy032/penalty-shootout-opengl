@@ -11,3 +11,6 @@ desktop.ini
 # IDE
 .vscode/
 .idea/
+
+# Tests
+.pytest_cache/

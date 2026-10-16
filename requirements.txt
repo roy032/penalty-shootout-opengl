@@ -1,3 +1,5 @@
 PyOpenGL>=3.1
+# Sound (optional: the game runs silently without it)
+pygame>=2.1
 # Optional speedups:
 # PyOpenGL_accelerate>=3.1
