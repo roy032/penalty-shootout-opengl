@@ -23,7 +23,7 @@ def one_kick(rng, kicker_level, keeper_level):
     kind, aim, power = ai.kicker_plan(rng, sp, profile, [])
     shot = physics.plan_shot(aim, power, kind, 0.0, rng, sp['sigma_scale'])
     ball = physics.Ball()
-    physics.launch(ball, shot['target'], shot['speed'], shot['curl'])
+    physics.apply_shot(ball, shot)
     keeper = Keeper(kp['reach'], kp['dive_time'], kp['catch_speed'])
     keeper.commit(*ai.keeper_decision(rng, kp, shot['target'], []))
     kick = Kick(ball, keeper)

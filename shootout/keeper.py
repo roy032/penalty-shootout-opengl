@@ -30,6 +30,9 @@ class Keeper:
         self.touch_cooldown = 0.0
         self.holding = False
         self.adjusted = False
+        self.fake_t = None       # time since a fake lean (dummy) started
+        self.fake_dir = 0
+        self.dove_early = False  # left the line before the ball was kicked
         self.y_end = None        # where the dive finishes: height of the body ...
         self.lean_end = None     # ... and how flat it is
 
@@ -49,10 +52,25 @@ class Keeper:
     def taunt(self):
         self.wave = 0.9
 
+    def fake(self, direction):
+        """Dip a shoulder one way to sell a dive that is not coming."""
+        if self.t is None:
+            self.fake_t = 0.0
+            self.fake_dir = direction or 1
+
+    def shuffle(self, offset):
+        """Step along the line (allowed by Law 14) to make one side look bigger."""
+        if self.t is None:
+            self.x0 = offset
+
     def update(self, dt):
         self.clock += dt
         self.wave = max(0.0, self.wave - dt)
         self.touch_cooldown = max(0.0, self.touch_cooldown - dt)
+        if self.fake_t is not None:
+            self.fake_t += dt
+            if self.fake_t > 0.45:
+                self.fake_t = None
         if self.dir is None:
             return
         if self.delay > 0:
@@ -88,7 +106,11 @@ class Keeper:
             sway = 0.06 * math.sin(self.clock * 3.2)
             bounce = 0.03 * abs(math.sin(self.clock * 6.4))
             arms = 'wave' if self.wave > 0 else 'ready'
-            return (self.x0 + sway, 0.95 + bounce, z), 0.0, arms
+            lean = 0.0
+            if self.fake_t is not None:
+                lean = self.fake_dir * 16.0 * math.sin(math.pi * self.fake_t / 0.45)
+                sway += self.fake_dir * 0.12 * math.sin(math.pi * self.fake_t / 0.45)
+            return (self.x0 + sway, 0.95 + bounce, z), lean, arms
         p = min(1.0, self.t / self.dive_time)
         e = _ease_out(p)
         fall = max(0.0, self.t - self.dive_time) / 0.45
@@ -124,6 +146,11 @@ class Keeper:
             a = along(0.45)
             u2 = (math.sin(rad + extra), math.cos(rad + extra))
             caps.append((a, [a[0] + u2[0] * 0.95, a[1] + u2[1] * 0.95, z], 0.12))
+            if not self.high:
+                # Trailing leg: the push-off leg stays low and can block with the foot
+                p = min(1.0, (self.t or 0.0) / self.dive_time)
+                foot = [self.x0 + self.dir * (0.3 + 0.9 * _ease_out(p)), 0.1, z]
+                caps.append((along(-0.5), foot, 0.13))
             return caps
         caps.append(([x, max(0.05, y - 0.95), z], [x, y + 0.8, z], 0.23))
         if arms == 'up':

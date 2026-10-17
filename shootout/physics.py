@@ -30,25 +30,36 @@ class Ball:
         self.spin_angle = 0.0       # degrees, for drawing the panels rolling
         self.in_net = False
         self.held = False           # caught by the keeper
+        self.wind = 0.0             # sideways push from the wind (m/s^2) while airborne
+        self.knuckle = 0.0          # amplitude of the late wobble of a spinless ball
+        self.knuckle_phase = 0.0
+        self.flight_t = 0.0
+        self.friction = 1.2         # grass drag on a rolling ball; wet grass is slicker
+        self.skid = 1.0             # >1 keeps more pace when it bounces (wet pitch, skidder)
 
     def speed(self):
         return length(self.vel)
 
 
-def plan_shot(aim, power, kind, pressure, rng, sigma_scale=1.0):
+def plan_shot(aim, power, kind, pressure, rng, sigma_scale=1.0, sweet=None):
     """Turn the kicker's intent into an actual target and launch parameters.
 
     aim: (x, y) on the goal-line plane the kicker is going for
     power: 0..1 where the power bar was stopped
-    pressure: 0..1 extra nerves (must-score kicks, keeper antics)
-    Returns dict with target (x, y), speed and curl.
+    pressure: 0..1 extra nerves (must-score kicks, keeper antics); can dip
+        below 0 for a settled kicker
+    sweet: (low, high) of the power bar's sweet spot
+    Returns dict with target (x, y), speed, curl and kind.
     """
     spec = C.SHOT_TYPES[kind]
-    over = max(0.0, power - C.POWER_SWEET_HIGH) / (1.0 - C.POWER_SWEET_HIGH)
-    under = max(0.0, C.POWER_SWEET_LOW - power) / C.POWER_SWEET_LOW
+    lo_sweet, hi_sweet = sweet or (C.POWER_SWEET_LOW, C.POWER_SWEET_HIGH)
+    over = max(0.0, power - hi_sweet) / (1.0 - hi_sweet)
+    under = max(0.0, lo_sweet - power) / lo_sweet
+    if kind == 'skidder':
+        aim = (aim[0], min(aim[1], 0.25))
     lo, hi = spec['speed']
     speed = lo + (hi - lo) * clamp(power, 0.0, 1.0)
-    sigma = (spec['sigma'] * (1.0 + 1.6 * over + 0.4 * under) + 0.14 * pressure) * sigma_scale
+    sigma = max(0.04, (spec['sigma'] * (1.0 + 1.6 * over + 0.4 * under) + 0.14 * pressure) * sigma_scale)
     tx = aim[0] + rng.gauss(0.0, sigma)
     # An over-hit ball climbs: the classic penalty blazed over the bar
     ty = aim[1] + rng.gauss(0.0, sigma * 0.8) + 0.9 * over * over + 0.25 * over
@@ -57,15 +68,37 @@ def plan_shot(aim, power, kind, pressure, rng, sigma_scale=1.0):
     if spec['curl']:
         # Start it wide and bend it back towards the target
         curl = -math.copysign(spec['curl'], tx if tx else 1.0)
-    return dict(target=(tx, ty), speed=speed, curl=curl, kind=kind)
+    if kind == 'skidder':
+        ty = C.BALL_RADIUS
+    knuckle = 0.0
+    if kind == 'knuckle':
+        knuckle = rng.uniform(4.0, 7.0)
+    return dict(target=(tx, ty), speed=speed, curl=curl, kind=kind,
+                knuckle=knuckle, knuckle_phase=rng.uniform(0.0, 6.283))
 
 
-def launch(ball, target, speed, curl=0.0):
+def apply_shot(ball, shot, wind=0.0):
+    """Launch a planned shot, including the effects that are not about aim."""
+    ball.knuckle = shot.get('knuckle', 0.0)
+    ball.knuckle_phase = shot.get('knuckle_phase', 0.0)
+    ball.wind = wind
+    if shot['kind'] == 'skidder':
+        # Drill it at a spot a couple of metres short of the line; it skids on
+        ball.skid = max(ball.skid, 1.4)
+        tx = shot['target'][0]
+        frac = 0.8
+        bounce = (tx * frac, C.BALL_RADIUS, C.SPOT_Z + (C.GOAL_LINE_Z - C.SPOT_Z) * frac)
+        return launch(ball, bounce[:2], shot['speed'], 0.0, z_target=bounce[2], wind=wind)
+    return launch(ball, shot['target'], shot['speed'], shot['curl'], wind=wind)
+
+
+def launch(ball, target, speed, curl=0.0, z_target=C.GOAL_LINE_Z, wind=0.0):
     """Set ball velocity so that, under gravity and curl, it passes through
-    target (x, y) on the goal-line plane."""
+    target (x, y) on the plane z = z_target (the goal line by default).
+    Wind is not compensated: the kicker has to allow for it."""
     start = ball.pos
     dx = target[0] - start[0]
-    dz = C.GOAL_LINE_Z - start[2]
+    dz = z_target - start[2]
     dy = target[1] - start[1]
     horiz = math.hypot(dx, dz)
     # speed is the horizontal speed; gravity supplies the dip, so a slow
@@ -173,7 +206,16 @@ def step(ball, dt):
     events = []
     if ball.held:
         return events
-    ball.vel[0] += ball.side_accel * dt
+    ball.flight_t += dt
+    airborne = ball.pos[1] > C.BALL_RADIUS + 0.02
+    ax = ball.side_accel
+    if airborne:
+        ax += ball.wind
+        if ball.knuckle and ball.flight_t > 0.18:
+            # No spin: the seams catch the air and it darts about late
+            ax += ball.knuckle * math.sin(ball.knuckle_phase + ball.flight_t * 23.0)
+            ball.vel[1] += 0.35 * ball.knuckle * math.cos(ball.knuckle_phase + ball.flight_t * 17.0) * dt
+    ball.vel[0] += ax * dt
     ball.vel[1] -= C.GRAVITY * dt
     for i in range(3):
         ball.pos[i] += ball.vel[i] * dt
@@ -187,12 +229,13 @@ def step(ball, dt):
         ball.pos[1] = C.BALL_RADIUS
         if ball.vel[1] < -0.6:
             events.append('bounce')
-            ball.vel[1] = -ball.vel[1] * 0.5
-            ball.vel[0] *= 0.85
-            ball.vel[2] *= 0.85
+            keep = min(0.98, 0.85 * ball.skid)
+            ball.vel[1] = -ball.vel[1] * (0.5 / ball.skid)
+            ball.vel[0] *= keep
+            ball.vel[2] *= keep
         else:
             ball.vel[1] = 0.0
-            f = max(0.0, 1.0 - 1.2 * dt)
+            f = max(0.0, 1.0 - ball.friction * dt)
             ball.vel[0] *= f
             ball.vel[2] *= f
         ball.side_accel = 0.0

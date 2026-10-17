@@ -88,6 +88,23 @@ def _heartbeat(rng):
     return out
 
 
+def _jeers(rng, seconds=2.4):
+    """Crowd murmur under a scatter of shrill whistles from the away end."""
+    base = _crowd(rng, seconds, lambda t, total: math.sin(math.pi * min(1.0, t / total)) ** 0.5 * 0.7, 0.85)
+    whistlers = [(rng.uniform(0, seconds - 0.6), rng.uniform(0.25, 0.6), rng.uniform(1800, 3400))
+                 for _ in range(14)]
+    out = []
+    for i, b in enumerate(base):
+        t = i / RATE
+        w = 0.0
+        for start, length, freq in whistlers:
+            if start <= t < start + length:
+                u = (t - start) / length
+                w += 0.18 * math.sin(math.pi * u) * math.sin(2 * math.pi * (freq + 300 * u) * t)
+        out.append(b + w)
+    return out
+
+
 class Audio:
     def __init__(self):
         self.enabled = False
@@ -124,6 +141,7 @@ class Audio:
                 'roar': _to_sound(mixer, _crowd(rng, 3.2, roar_swell, 0.8), 0.6),
                 'gasp': _to_sound(mixer, _crowd(rng, 1.4, gasp_swell, 0.93), 0.55),
                 'heartbeat': _to_sound(mixer, _heartbeat(rng), 0.8),
+                'jeer': _to_sound(mixer, _jeers(rng), 0.45),
             }
         except Exception:
             return
