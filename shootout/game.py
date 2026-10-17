@@ -7,13 +7,13 @@ import os
 import random
 import time
 
-from . import achievements, ai, commentary, config as C, physics, report, squad as S, stats, winprob
+from . import achievements, ai, characters as CH, commentary, config as C, physics, report, squad as S, stats, winprob
 from .controls import CONTROLS
 from .keeper import Keeper
 from .kick import Kick
 from .modes import (CHALLENGE_ORDER, BINS, TUTORIAL as TUTORIAL_STEPS, CareerComp, ChallengeComp, GhostComp, KingOfTheGoal, Knockout,
                     MatchPenaltyComp, ShootoutComp, TournamentComp, TrainingComp, TutorialComp,
-                    career_defaults)
+                    career_defaults, rival_memory)
 from .rules import other
 from .scenarios import SCENARIOS, really_lost
 
@@ -45,6 +45,33 @@ MODE_LABELS = {'pvc': 'PvC', 'pvp': 'PvP', 'manager': 'Manager', 'famous': 'Famo
                'challenge': 'Challenge', 'daily': 'Daily', 'ghost': 'Ghost duel', 'tutorial': 'Tutorial',
                'lan': 'LAN'}
 SHOOTOUT_STATS = ('pvc', 'pvp', 'famous', 'daily', 'tournament', 'ghost')
+SQUAD_MODES = ['club', 'legends', 'pick']
+PICK_MODES = ('pvc', 'pvp', 'manager', 'tournament', 'party', 'career')
+CELEB_CYCLE = list(CH.CELEBRATIONS)
+# How the keeper's personality shifts his numbers (only keys his table has)
+KEEPER_MODS = {
+    'wall': dict(stay=0.05, reaction=0.03, reach=0.05), 'gambler': dict(early=0.06, read=-0.05, reaction=-0.02),
+    'reader': dict(read=0.1), 'showman': dict(bait=0.25), 'dancer': dict(bait=0.3),
+    'sweeper': dict(reach=0.03, catch_speed=1.0), 'cat': dict(dive_time=-0.02),
+}
+# Referees: how much time-wasting they allow, and so how much the mind games are worth
+REFEREES = [
+    dict(name='A. Lindqvist', style='lenient', label='Lets the time-wasting go', taunt=0.4, first=0.0, ball=0.1,
+         antics=1.15),
+    dict(name='M. Okafor', style='strict', label='Books on the first wave', taunt=1.6, first=0.35, ball=0.6,
+         antics=0.85),
+    dict(name='R. Duarte', style='standard', label='By the book', taunt=1.0, first=0.0, ball=0.3, antics=1.0),
+    dict(name='S. Haddad', style='lenient', label='Lets the players play', taunt=0.5, first=0.0, ball=0.15,
+         antics=1.1),
+    dict(name='E. Brennan', style='strict', label='No nonsense: cards come out early', taunt=1.4, first=0.3,
+         ball=0.5, antics=0.9),
+    dict(name='K. Tanaka', style='standard', label='Calm and consistent', taunt=1.0, first=0.0, ball=0.3,
+         antics=1.0),
+]
+BIG_CELEBRATIONS = {'knee slide', 'aeroplane', 'siuu', 'backflip', 'samba', 'scream', 'punch', 'wings', 'roar',
+                    'arms wide', 'pose', 'shirt swing', 'bolt', 'levitate'}
+TAUNT_CELEBRATIONS = {'shush', 'cold', 'tea', 'crossed arms', 'think', 'wag', 'selfie', 'flex', 'collar', 'stroll',
+                      'lean', 'number', 'spell'}
 
 
 def _lerp(a, b, t):
@@ -120,6 +147,15 @@ class Game:
         self.menu_focus = 0
         self.rebind = None                 # (slot, action index) while rebinding keys
         self.local_slot = None             # set for LAN play: the slot this screen controls
+        # Characters
+        self.squads = 'club'               # club squads, a random draft of icons, or pick them
+        self.picks = {}                    # roster keys picked on the select screen
+        self.select = None                 # select screen state
+        self.create = None                 # create-a-player screen state
+        self.players_file = CH.players_path(HOME)
+        CH.load_custom(self.players_file)
+        self.story_beat = None
+        self.ref = REFEREES[2]
         # Overlays and camera
         self.paused = False
         self.show_help = False
@@ -156,6 +192,8 @@ class Game:
             rows += ['kicks', 'order']
         if m in ('pvc', 'pvp', 'manager'):
             rows += ['team1', 'team2']
+        if m in PICK_MODES:
+            rows.append('squads')
         if m in ('pvp', 'party'):
             rows.append('hidden')
         if m == 'famous':
@@ -244,11 +282,14 @@ class Game:
         srng = random.Random(self.squad_seed)
         if self.playback is not None:
             data = self.playback_data
+            squads = None
+            if data.get('squads'):
+                squads = {s: [S.Player.from_dict(d) for d in sq] for s, sq in data['squads'].items()}
             return ShootoutComp(data['names'], {s: {k: tuple(v) for k, v in kit.items()}
                                                 for s, kit in data['kits'].items()},
                                 {'p1': 'ai', 'p2': 'ai'}, first=data['first'], kicks=data['kicks'],
                                 results=data.get('preloaded'), order=data.get('order', 'abab'),
-                                rng=random.Random(data.get('squad_seed', 0)))
+                                rng=random.Random(data.get('squad_seed', 0)), squads=squads, fixed=('p1', 'p2'))
         m = self.mode
         if m == 'famous':
             sc = SCENARIOS[self.scenario]
@@ -260,7 +301,8 @@ class Game:
             return MatchPenaltyComp(self.role)
         if m == 'career':
             saved = self.stats['career'].get(self.role)
-            return CareerComp(dict(saved) if isinstance(saved, dict) else career_defaults(self.role))
+            career = dict(saved) if isinstance(saved, dict) else career_defaults(self.role)
+            return CareerComp(career, self._career_avatar(career, srng), self._career_rival(career))
         if m == 'training':
             return TrainingComp(self.role)
         if m == 'challenge':
@@ -268,11 +310,18 @@ class Game:
         if m == 'tutorial':
             return TutorialComp()
         if m == 'party':
+            chars = self._party_chars(srng)
             if self.party_type == 'king':
-                return KingOfTheGoal(self.party_players)
-            return Knockout(self.party_players, kicks=3)
+                return KingOfTheGoal(self.party_players, chars=chars)
+            return Knockout(self.party_players, kicks=3, chars=chars)
         if m == 'tournament':
-            return TournamentComp(self._teams8(srng), srng, kicks=self.kicks_per_side or 5, order=self.order)
+            icons = None
+            if self.squads != 'club':
+                picks = self.picks if self.squads == 'pick' else {}
+                icons = dict(takers=list(picks.get('p1', [])), keeper=(picks.get('p1_keeper') or [None])[0],
+                             stats=self.stats)
+            return TournamentComp(self._teams8(srng), srng, kicks=self.kicks_per_side or 5, order=self.order,
+                                  icons=icons)
         if m == 'ghost':
             data = self.duels[self.ghost_i % len(self.duels)][1] if self.duels else demo_ghost()
             return GhostComp(data, srng)
@@ -292,11 +341,74 @@ class Game:
             control = {'p1': 'human', 'p2': 'human'}
         else:                                           # manager: you pick, they play
             control = {'p1': 'ai', 'p2': 'ai'}
+        squads, fixed = self._icon_squads(srng)
         comp = ShootoutComp(names, kits, control, first=self.rng.choice(('p1', 'p2')), kicks=self.kicks_per_side,
-                            order=self.order, rng=srng)
+                            order=self.order, rng=srng, squads=squads, fixed=fixed)
         if m == 'manager':
             comp.manager = 'p1'
         return comp
+
+    # ------------------------------------------------------------ characters
+    def _icon_squads(self, srng):
+        """Character squads for both sides, or (None, ()) for club squads."""
+        if self.squads == 'club':
+            return None, ()
+        picks = self.picks if self.squads == 'pick' else {}
+        squads, fixed, used = {}, [], set()
+        for s in ('p1', 'p2'):
+            takers = list(picks.get(s, []))
+            keeper = (picks.get(s + '_keeper') or [None])[0]
+            squads[s] = CH.squad_from(takers, keeper, srng, exclude=used, stats=self.stats)
+            used |= {p.char for p in squads[s]}
+            if takers:
+                fixed.append(s)
+        return squads, tuple(fixed)
+
+    def _party_chars(self, srng):
+        if self.squads == 'club':
+            return None
+        keys = list(self.picks.get('party', [])) if self.squads == 'pick' else []
+        chars = [CH.get(k) for k in keys if CH.get(k)][:self.party_players]
+        if len(chars) < self.party_players:
+            pool = [c for c in CH.ROSTER if c['key'] not in {c['key'] for c in chars} and not CH.locked(c, self.stats)]
+            chars += srng.sample(pool, self.party_players - len(chars))
+        return [CH.make_player(c) for c in chars]
+
+    def _career_avatar(self, career, srng):
+        if self.squads == 'club':
+            return None
+        if self.squads == 'pick' and self.picks.get('avatar'):
+            career['char'] = self.picks['avatar'][0]
+        if not CH.get(career.get('char') or ''):
+            role = 'keep' if career['role'] == 'keep' else 'kick'
+            pool = [c for c in CH.ROSTER if c['role'] == role and not CH.locked(c, self.stats)]
+            career['char'] = srng.choice(pool)['key']
+        return CH.make_player(CH.get(career['char']))
+
+    @staticmethod
+    def _career_rival(career):
+        """The same rival all career: a keeper if you take kicks, a taker if you keep."""
+        role = 'keep' if career['role'] == 'kick' else 'kick'
+        if not CH.get(career.get('rival') or ''):
+            pool = [c for c in CH.ROSTER if c['role'] == role and not c.get('unlock')]
+            career['rival'] = random.Random(len(pool) * 31 + (1 if role == 'keep' else 2)).choice(pool)['key']
+        return CH.make_player(CH.get(career['rival']))
+
+    def all_players(self):
+        """Every squad.Player in this match, for form and the select screen."""
+        comp = self.comp
+        out = []
+        if isinstance(comp, ShootoutComp):
+            for s in ('p1', 'p2'):
+                out += [(s, p) for p in comp.order[s]]
+        elif getattr(comp, 'chars', None):
+            out += [(None, p) for p in comp.chars]
+        return out
+
+    def _apply_form(self):
+        form = self.stats.setdefault('form', {})
+        for s, p in self.all_players():
+            p.form = form.get(p.record_key(self.name(s) if s else ''), 0)
 
     def new_match(self):
         variant = 'stadium' if self.mode in ('famous', 'tutorial') else self.variant
@@ -317,6 +429,8 @@ class Game:
         self.stats_saved = False
         self.unlocked = []                  # things unlocked this match, for the summary
         self.daily_grid = None
+        self.ref = random.Random(self.squad_seed + 7).choice(REFEREES)
+        self.story_beat = self.comp.story() if isinstance(self.comp, CareerComp) else None
         self._reset_tie()
 
     def _reset_tie(self):
@@ -329,6 +443,10 @@ class Game:
         self.lineup = {s: dict(cursor=0, touched=False, ready=False) for s in ('p1', 'p2')}
         orders = self.comp.order if isinstance(self.comp.order, dict) else {}
         self._squad_base = {s: list(o) for s, o in orders.items() if o}
+        self._apply_form()
+        self.banter = None
+        self.captain = None
+        self._bench_cache = None
         self.spot_wear = 0
         self.nerves = {'p1': 0.0, 'p2': 0.0}
         self.keeper_conf = {'p1': 0, 'p2': 0}
@@ -418,6 +536,15 @@ class Game:
             kp['reach'] += 0.06 * self.comp.traits('reach')
             kp['dive_time'] -= 0.015 * self.comp.traits('speed')
             kp['catch_speed'] *= 1.0 + 0.1 * self.comp.traits('catch')
+        kpl = self.comp.keeper_player(slot)
+        if kpl is not None:
+            kp['reach'] += kpl.reach
+            kp['dive_time'] -= kpl.speed
+            for k, v in KEEPER_MODS.get(kpl.persona, {}).items():
+                if k in kp:
+                    kp[k] += v
+            if kpl.persona == 'reader' and 'read' in kp:
+                kp['memory'] = 2.0
         conf = self.keeper_conf[slot]
         kp['reach'] *= 1.0 + 0.03 * conf
         kp['dive_time'] -= 0.005 * conf
@@ -481,6 +608,12 @@ class Game:
         self.stakes = self.comp.stakes(self.kicker)
         self.ai_plan = None
         self.bottle_note = None
+        sig = self.player.signature if self.player is not None else None
+        if (sig in CH.SIG_SHOT and self.shot_kind == 'placed' and self.is_human(self.kicker)
+                and CH.SIG_SHOT[sig] in C.shot_order()):
+            self.shot_kind = CH.SIG_SHOT[sig]            # starts on the signature shot
+        if sig == 'disguise':
+            self.runup = 'disguised'
         if self.forced is not None:
             self.shot_kind = self.forced['shot']['kind']
             self.runup = self.forced.get('runup', 'angled')
@@ -493,12 +626,17 @@ class Game:
             self.ai_plan = dict(kind=shot['kind'], aim=shot['target'], power=g.get('power', 0.7))
         elif not self.is_human(self.kicker):
             self._plan_ai_kick(keeper_side)
+        kpl = self.comp.keeper_player(keeper_side)
         if self.player is not None and self.is_human(keeper_side) and not self.is_human(self.kicker):
             self.bottle_note = S.bottle_note(self.player, random.Random(self.player.number * 7919
-                                                                         + len(self.player.name)))
+                                                                         + len(self.player.name)),
+                                             perfect=bool(kpl and kpl.signature == 'notes'))
         self.ai_take_ball = False
         if not self.is_human(keeper_side) and self.playback is None and not getattr(self.comp, 'no_keeper', False):
-            pre = ai.keeper_prekick(self.rng, self.diff()['keeper'])
+            params = dict(self.diff()['keeper'])
+            if kpl is not None:
+                params['bait'] += KEEPER_MODS.get(kpl.persona, {}).get('bait', 0.0)
+            pre = ai.keeper_prekick(self.rng, params, kpl.persona if kpl else None)
             self.keeper.shuffle(pre['shuffle'])
             self.keeper.point(pre['point'])
             self.ai_keeper_fake = pre['fake']
@@ -518,13 +656,50 @@ class Game:
                 self._play('roar' if self.end_fans == self.kicker else 'jeer')
             if self.playback is None:
                 cold = bool(self.player and self.player.sub and self.player.kicks == 0)
-                self._say(commentary.walk_line(self.crng, self.taker_name(), self.name(self.kicker), self.stakes,
-                                               self.comp.in_sudden_death(), self.comp.taker_is_keeper(self.kicker),
-                                               cold))
+                line = commentary.walk_line(self.crng, self.taker_name(), self.name(self.kicker), self.stakes,
+                                            self.comp.in_sudden_death(), self.comp.taker_is_keeper(self.kicker),
+                                            cold, women=bool(self.player and self.player.women))
+                if not self.stakes and not cold and self.crng.random() < 0.65:
+                    line = commentary.character_line(self.crng, self.player, kpl, self._spot_record(),
+                                                     self.name(self.kicker)) or line
+                self._say(line)
+                self._walk_extras(kpl)
         self._loops(True)
+
+    def _spot_record(self):
+        """(kicks, goals) from the spot for this taker, from the saved stats."""
+        if self.player is None:
+            return None
+        return self.stats['takers'].get(self.player.record_key(self.name(self.kicker)))
+
+    def _walk_extras(self, kpl):
+        """Banter, and a captain who walks with a nervous taker."""
+        fig = self.comp.figure(self.kicker, False)
+        kfig = self.comp.figure(self.keeper_side(), True)
+        rival = isinstance(self.comp, CareerComp) and self.comp.rival is not None
+        memory = None
+        if rival:
+            log = self.comp.career.get('rival_log') or []
+            if log:
+                memory = rival_memory(log[-1], self.comp.career['role'])
+        if rival or (fig is not None and kfig is not None and (fig.char or kfig.char) and self.crng.random() < 0.4):
+            self.banter = commentary.banter(self.crng, fig, kfig, memory)
+        p = self.player
+        if p is None or not isinstance(self.comp, ShootoutComp) or self.comp.taker_is_keeper(self.kicker):
+            return
+        nervous = p.persona == 'kid' or self.stakes == 'must_score' or self.nerves[self.kicker] > 0.1
+        if nervous:
+            mates = [m for m in self.comp.bench(self.kicker) if m is not p]
+            if mates:
+                self.captain = mates[0]
+                self.nerves[self.kicker] = max(-0.15, self.nerves[self.kicker] - 0.05)
+                self.captions.append((f'{self.captain.name} walks up with {p.name}: a few words to settle '
+                                      f'{"her" if p.women else "him"}', self.clock))
+                self.captions = self.captions[-3:]
 
     def _plan_ai_kick(self, keeper_side):
         sp = self.diff()['shooter']
+        profile = ai.persona_profile(self.profile, self.player)
         if isinstance(self.comp, TrainingComp):
             zone = DRILL_ZONES[self.drill_zone]
             if zone != 'random':
@@ -533,11 +708,15 @@ class Game:
                 self.ai_plan = dict(kind='placed', aim=(col, y), power=0.7)
                 self.shot_kind = 'placed'
                 return
-        kind, aim, power = ai.kicker_plan(self.rng, sp, self.profile, self.memory.dives[keeper_side],
+        kind, aim, power = ai.kicker_plan(self.rng, sp, profile, self.memory.dives[keeper_side],
                                           player=self.player, shot_types=C.shot_order())
+        if isinstance(self.comp, CareerComp) and self.comp.rival and kind != 'chip':
+            log = self.comp.career.get('rival_log') or []
+            if log and log[-1].get('dir') and self.rng.random() < 0.6:
+                aim = (-log[-1]['dir'] * abs(aim[0]), aim[1])     # away from where you dived last time
         self.ai_plan = dict(kind=kind, aim=aim, power=power)
         self.shot_kind = kind
-        self.runup = 'disguised' if self.rng.random() < self.profile.get('disguise', 0.3) else \
+        self.runup = 'disguised' if self.rng.random() < profile.get('disguise', 0.3) else \
             self.rng.choice(('angled', 'straight'))
         self.gaze = self.rng.choice(GAZES)
 
@@ -582,11 +761,21 @@ class Game:
 
     def taker_label(self):
         t = self.comp.taker(self.kicker)
-        return f'{self.name(self.kicker)} {t}' if t else self.name(self.kicker)
+        n = self.name(self.kicker)
+        if not t:
+            return n
+        return t if n in t else f'{n} {t}'
+
+    def persona(self):
+        return self.player.persona if self.player is not None else None
 
     def antics(self):
-        """How hard the keeper's antics land: staring him down invites them."""
-        return {'stare': 1.5, 'away': 0.5}.get(self.gaze, 1.0)
+        """How hard the keeper's antics land: staring him down invites them,
+        an Ice Cold taker shrugs them off, a Hothead takes the bait, and a
+        lenient referee lets the keeper get away with more."""
+        m = {'stare': 1.5, 'away': 0.5}.get(self.gaze, 1.0)
+        m *= {'ice': 0.5, 'hothead': 2.0}.get(self.persona(), 1.0)
+        return m * self.ref.get('antics', 1.0)
 
     def pressure(self):
         p = {'must_score': 0.6, 'to_win': 0.35}.get(self.stakes, 0.0)
@@ -601,12 +790,22 @@ class Game:
         p += {'stare': -0.06, 'away': 0.05}.get(self.gaze, 0.0)
         if self.ritual_kicker:
             p -= 0.06
-        if isinstance(self.comp, ShootoutComp) and self.end_fans != self.kicker:
+        if isinstance(self.comp, ShootoutComp) and self.end_fans != self.kicker and self.persona() != 'ice':
             p += 0.1                                   # whistled by the away end
         p += self.nerves[self.kicker]
         p += {'rushed': 0.25, 'settled': -0.12, 'dragged': 0.15}.get(self.composure, 0.0)
         if self.player is not None and hasattr(self.comp, 'slot_index'):
-            p += self.player.pressure(self.comp.slot_index(self.kicker))
+            p += self.player.pressure(self.comp.slot_index(self.kicker), self.stakes)
+        # Aura: a legend in goal looms large; a legend on the spot carries it
+        kpl = self.comp.keeper_player(self.keeper_side())
+        if kpl is not None:
+            p += 0.1 * kpl.aura
+            if kpl.persona == 'dancer' or kpl.signature == 'legs':
+                p += 0.04 * mult
+        if self.player is not None:
+            p -= 0.05 * self.player.aura
+            if self.player.signature == 'stance':
+                p -= 0.03
         if isinstance(self.comp, CareerComp) and self.comp.role == 'kick' and self.is_human(self.kicker):
             p -= 0.08 * self.comp.traits('pressure')
         return max(-0.2, min(1.2, p))
@@ -618,8 +817,13 @@ class Game:
         x = (self.power_clock / self.power_period()) % 1.0
         return 1.0 - abs(1.0 - 2.0 * x)
 
+    def stutter_pause(self):
+        """The hop is quicker than a normal stutter; the paradinha waits longer."""
+        sig = self.player.signature if self.player is not None else None
+        return C.STUTTER_PAUSE * {'hop': 0.55, 'stopstart': 1.3}.get(sig, 1.0)
+
     def runup_time(self):
-        return C.RUNUP_TIME + (C.STUTTER_PAUSE if self.shot_kind == 'stutter' else 0.0)
+        return C.RUNUP_TIME + (self.stutter_pause() if self.shot_kind == 'stutter' else 0.0)
 
     def left_foot(self):
         return bool(self.player and self.player.foot == 'L')
@@ -710,7 +914,7 @@ class Game:
         self.phase = 'ritual'
         self.phase_t = 0.0
         self.ritual_len = RITUAL_TIME
-        if not self.is_human(self.kicker) and self.rng.random() < 0.35:
+        if not self.is_human(self.kicker) and (self.rng.random() < 0.35 or self.persona() == 'thinker'):
             self._take_time()
 
     def _tick_ritual(self):
@@ -725,7 +929,8 @@ class Game:
         if not self.ritual_kicker:
             self.ritual_kicker = True
             self.ritual_len = max(self.ritual_len, 2.4)
-            self.message = f'{self.taker_name()} takes his time placing the ball...'
+            his = self.player.his if self.player is not None else 'his'
+            self.message = f'{self.taker_name()} takes {his} time placing the ball...'
 
     def _take_ball(self, slot):
         """The keeper picks the ball up and hands it over slowly: gamesmanship
@@ -734,8 +939,10 @@ class Game:
             return
         self.took_ball = True
         self.ritual_len += 1.0
-        self.message = f'{self.name(slot)} keeper picks the ball up and takes his time giving it back'
-        if self.rng.random() < 0.3:
+        kpl = self.comp.keeper_player(slot)
+        his = kpl.his if kpl is not None else 'his'
+        self.message = f'{self.name(slot)} keeper picks the ball up and takes {his} time giving it back'
+        if self.rng.random() < self.ref['ball']:
             self._book(slot, 'Delaying the kick')
 
     # -------------------------------------------------------------- the toss
@@ -943,16 +1150,19 @@ class Game:
         elif no_keeper:
             pass
         elif not self.is_human(ks) and not self.keeper.committed():
+            if self.player is not None and 'read' in kp:
+                kp = dict(kp, read=kp['read'] * (1.0 - 0.3 * self.player.aura))   # the aura: hard to read
             direction, high, delay = ai.keeper_decision(
                 self.rng, kp, shot['target'], self.memory.shots[self.kicker],
-                cue=self.cue(), shuffle=self.keeper.x0, pointed=self.keeper.point_dir)
+                cue=self.cue(), shuffle=self.keeper.x0, pointed=self.keeper.point_dir, notes=self._notes(ks))
             early = self.rng.random() < kp.get('early', 0.0)
             if early:
                 # Off the line a fraction early: a gamble the VAR may catch
                 delay = 0.0
                 self.keeper.dove_early = True
             self.keeper.commit(direction, high, delay)
-            if direction and self.rng.random() < self.ai_fingertip():
+            kpl = self.comp.keeper_player(ks)
+            if direction and self.rng.random() < self.ai_fingertip() + (0.15 if kpl and kpl.persona == 'cat' else 0):
                 self.ai_stretch = 'good' if self.rng.random() < 0.75 else 'early'
         elif self.is_human(ks) and self.keeper_dir is not None and not self.keeper.committed():
             self.keeper.commit(self.keeper_dir, self.keeper_high, 0.03)
@@ -965,6 +1175,19 @@ class Game:
                                    (self.keeper.delay if self.keeper.t is None else -self.keeper.t)) \
             if self.keeper.committed() else None
         self._play('kick')
+
+    def _notes(self, ks):
+        """Where a keeper with notes expects this taker to go, or 0."""
+        kpl = self.comp.keeper_player(ks)
+        if kpl is None or self.player is None or self.player.keeper:
+            return 0
+        if kpl.signature == 'notes':
+            return S.natural_dir(self.player)
+        if isinstance(self.comp, CareerComp) and self.comp.rival is kpl:
+            log = self.comp.career.get('rival_log') or []
+            if log and log[-1].get('dir'):
+                return log[-1]['dir']                  # the rival remembers where you went
+        return 0
 
     def time_to_line(self):
         """Seconds until the ball reaches the keeper's line."""
@@ -1075,7 +1298,8 @@ class Game:
                              at=self.kick.crossing, kind=self.shot_kind, name=self.name(self.kicker),
                              taker=self.comp.taker(self.kicker), aim=tuple(aimed), composure=self.composure,
                              runup=self.runup, keeper_dir=human_keeper_dir, keeper_side=ks,
-                             stretch=self.keeper.stretch))
+                             stretch=self.keeper.stretch, pkey=self._form_key(),
+                             n=self.comp.slot_index(self.kicker) if hasattr(self.comp, 'slot_index') else 0))
         self._record_kick(scored, label)
         self.comp.record(self.kicker, hit)
         if self.player is not None:
@@ -1084,6 +1308,9 @@ class Game:
             self.nerves[self.kicker] = max(-0.1, self.nerves[self.kicker] - 0.06)
             self.keeper_conf[ks] = 0
             self.celebration = self.rng.choice(CELEBRATIONS)
+            fig = self.comp.figure(self.kicker, False)
+            if fig is not None and fig.celebration in CH.CELEBRATIONS:
+                self.celebration = fig.celebration          # his own celebration
             self.goals_in_row[self.kicker] += 1
         else:
             self.nerves[self.kicker] = min(0.3, self.nerves[self.kicker] + 0.12)
@@ -1093,9 +1320,13 @@ class Game:
                 self.saves_made[ks] += 1
         if self.playback is not None:
             return
+        kpl = self.comp.keeper_player(ks)
         self._say(commentary.result_line(self.crng, label, self.shot_kind, self.taker_name(),
                                          self.name(self.kicker), self.saves_made[ks],
-                                         self.goals_in_row[self.kicker]))
+                                         self.goals_in_row[self.kicker],
+                                         women=bool(self.player and self.player.women),
+                                         keeper_women=bool(kpl and kpl.women),
+                                         celebration=self.celebration if scored else None))
         self._kick_bookkeeping(scored, label, aimed, ks, touch)
 
     def _kick_bookkeeping(self, scored, label, aimed, ks, touch):
@@ -1124,8 +1355,8 @@ class Game:
             self.stats['faced'] += 1
             self.stats['saves'] += int(not scored and touch is not None)
         # Each shirt number's record from the spot, for sides you pick
-        if self.player is not None and self.controller(kicker):
-            key = f'{self.name(kicker)} #{self.player.number}'
+        if self.player is not None and (self.controller(kicker) or self.player.char):
+            key = self.player.record_key(self.name(kicker))
             rec = self.stats['takers'].setdefault(key, [0, 0])
             rec[0] += 1
             rec[1] += int(scored)
@@ -1152,6 +1383,28 @@ class Game:
                 self._achieve('outfield_save')
             if self.keeper.stretch == 'good':
                 self._achieve('fingertip')
+
+    def _form_key(self):
+        """Whose form this kick counts for: characters always, club players on sides you pick."""
+        p = self.player
+        if p is None or not (p.char or self.controller(self.kicker)):
+            return None
+        return p.record_key(self.name(self.kicker))
+
+    def _update_form(self):
+        """A scored fifth kick lifts a taker's form, a miss dents it; it fades over a few games."""
+        form = self.stats.setdefault('form', {})
+        kicks = [e for e in self.log if e.get('pkey')]
+        for key in {e['pkey'] for e in kicks}:
+            f = form.get(key, 0)
+            f -= (f > 0) - (f < 0)
+            for e in kicks:
+                if e['pkey'] == key:
+                    f += -1 if not e['scored'] else (1 if e.get('n', 0) >= 4 else 0)
+            form[key] = max(-2, min(2, f))
+        if len(form) > 300:
+            for k in list(form)[:len(form) - 300]:
+                del form[k]
 
     def _resolve_var(self):
         if self.var == 'double_touch':
@@ -1184,7 +1437,9 @@ class Game:
         """Arm-waving and time-wasting: rattles the kicker, but the referee is watching."""
         self.taunts += 1
         self.keeper.taunt()
-        risk = {1: 0.0, 2: 0.15, 3: 0.35}.get(self.taunts, 0.5)
+        risk = {1: 0.0, 2: 0.15, 3: 0.35}.get(self.taunts, 0.5) * self.ref['taunt']
+        if self.taunts == 1:
+            risk += self.ref['first']
         if self.rng.random() < risk:
             self._book(slot, 'Time-wasting')
 
@@ -1237,20 +1492,23 @@ class Game:
             return
         me, them = self.kicker, other(self.kicker)
         c = self.celebration
-        if c in ('knee slide', 'aeroplane'):
-            self.nerves[me] -= 0.08
-            self.nerves[them] += 0.06
-            note = f'{self.name(me)} are buzzing; {self.name(them)} feel it'
-        elif c == 'shush':
+        f = 1.5 if self.persona() == 'showboat' else 1.0       # showboats sell it harder
+        label = CH.CELEBRATIONS.get(c, c).lower()
+        if c in BIG_CELEBRATIONS:
+            self.nerves[me] -= 0.08 * f
+            self.nerves[them] += 0.06 * f
+            note = f'{label.capitalize()}! {self.name(me)} are buzzing; {self.name(them)} feel it'
+        elif c in TAUNT_CELEBRATIONS:
             if self.end_fans != me:
-                self.nerves[them] -= 0.05          # the away end roars its side on
+                self.nerves[them] -= 0.05 * f          # the away end roars its side on
                 self.nerves[me] += 0.05
-                note = f'Shushing the {self.name(them)} fans: that has fired them up'
+                note = f'{label.capitalize()} in front of the {self.name(them)} fans: that has fired them up'
             else:
-                note = None
+                self.nerves[them] += 0.03 * f
+                note = f'{label.capitalize()}: {self.name(them)} did not enjoy that'
         else:
-            self.nerves[me] -= 0.04
-            note = 'Kissing the badge: the team-mates love it'
+            self.nerves[me] -= 0.04 * f
+            note = f'{label.capitalize()}: the team-mates love it'
         for s in (me, them):
             self.nerves[s] = max(-0.15, min(0.3, self.nerves[s]))
         if note:
@@ -1293,8 +1551,16 @@ class Game:
             self._achieve('rewrite')
         if isinstance(comp, TournamentComp) and comp.champion:
             self._achieve('tournament')
+        if isinstance(comp, (ShootoutComp, KingOfTheGoal, Knockout)):
+            self._update_form()
         if isinstance(comp, CareerComp):
-            gained = comp.finish()
+            last = self.log[-1] if self.log else {}
+            if comp.role == 'kick':
+                x = (last.get('aim') or (0.0, 0.0))[0]
+                direction = 0 if abs(x) < 0.8 else (1 if x > 0 else -1)
+            else:
+                direction = last.get('keeper_dir')
+            gained = comp.finish(direction)
             self.stats['career'][comp.career['role']] = comp.career
             self.unlocked += gained
             if gained:
@@ -1379,11 +1645,14 @@ class Game:
         p = self.player
         if p is None or self.phase not in ('walk', 'ritual'):
             return None
-        rec = self.stats['takers'].get(f'{self.name(self.kicker)} #{p.number}')
+        rec = self.stats['takers'].get(p.record_key(self.name(self.kicker)))
+        persona = (CH.KEEPER_PERSONAS if p.keeper else CH.TAKER_PERSONAS).get(p.persona, ('', ''))[0]
         return dict(label=p.label, team=self.name(self.kicker), foot='Left foot' if p.foot == 'L' else 'Right foot',
                     composure=p.composure, power=p.power, placement=p.placement, sub=p.sub,
                     record=f'{rec[1]}/{rec[0]} from the spot' if rec else None,
-                    keeper=p.keeper)
+                    keeper=p.keeper, persona=persona, tag=p.tag, aura=p.aura, form=p.form,
+                    signature=CH.SIGNATURES[p.signature][0] if p.signature in CH.SIGNATURES else None,
+                    full=p.full if p.char else None, glow=p.glow)
 
     # ------------------------------------------------------------ replay files
     def replay_data(self):
@@ -1396,7 +1665,9 @@ class Game:
             squad_seed=self.squad_seed, variant=C.VARIANT,
             preloaded={s: r['results'][:self.preloaded.get(s, 0)] for s, r in zip(('p1', 'p2'), rows)}
             if self.preloaded else None,
-            weather=self.weather, wind=self.wind, kick_records=self.records)
+            weather=self.weather, wind=self.wind, kick_records=self.records,
+            squads={s: [p.to_dict() for p in o] for s, o in self.comp.order.items()}
+            if isinstance(self.comp, ShootoutComp) else None)
 
     def save_replay(self, directory=REPLAY_DIR):
         if not isinstance(self.comp, ShootoutComp):
@@ -1514,7 +1785,12 @@ class Game:
         px, pz = kicker_plant(lf)
         yaw = math.degrees(math.atan2(-(px - sx), -(pz - sz)))
         state = dict(pos=(sx, sz), yaw=yaw, run=0.0, kick=0.0, mood=None, hips=0.0, left_foot=lf,
-                     gaze=self.gaze if self.phase in ('ritual', 'aim') else None)
+                     gaze=self.gaze if self.phase in ('ritual', 'aim') else None, face=self._face(True))
+        fig = self.comp.figure(self.kicker, False)
+        if fig is not None:
+            state['fig'] = self._fig_info(fig, self.kicker)
+            if fig.signature == 'stance' and self.phase == 'aim':
+                state['stance'] = True
         if self.phase == 'walk':
             r = min(1.0, self.phase_t / WALK_TIME)
             wx, wz = walk_from()
@@ -1527,12 +1803,17 @@ class Game:
             bend = math.sin(math.pi * min(1.0, r * 1.6))
             state['pos'] = (_lerp(px, sx, max(0.0, r * 1.6 - 0.6)), _lerp(pz, sz, max(0.0, r * 1.6 - 0.6)))
             state['bend'] = bend
+            if fig is not None and fig.mannerism:
+                state['mannerism'] = (fig.mannerism, r)
+            if fig is not None and fig.signature == 'stance' and r > 0.8:
+                state['stance'] = True
         elif self.phase == 'runup':
             rt = self.runup_time()
             t = self.phase_t
             if self.shot_kind == 'stutter':
                 stop = C.RUNUP_TIME * 0.72
-                t = t if t < stop else (stop if t < stop + C.STUTTER_PAUSE else t - C.STUTTER_PAUSE)
+                pause = self.stutter_pause()
+                t = t if t < stop else (stop if t < stop + pause else t - pause)
                 rt = C.RUNUP_TIME
             r = min(1.0, t / rt)
             e = r * r * (3 - 2 * r)
@@ -1544,6 +1825,11 @@ class Game:
                 self.ai_plan['aim'] if self.ai_plan else self.aim)
             side = 0 if abs(plan[0]) < 0.8 else (1 if plan[0] > 0 else -1)
             state['hips'] = -side * 22.0 * self.cue() * max(0.0, (r - 0.45) / 0.55)
+            if self.shot_kind == 'stutter' and fig is not None and fig.signature == 'hop':
+                stop = C.RUNUP_TIME * 0.72
+                into = self.phase_t - stop
+                if 0.0 <= into <= self.stutter_pause():
+                    state['jump'] = 0.22 * math.sin(math.pi * into / self.stutter_pause())   # the hop
         elif self.phase in ('flight', 'result', 'replay', 'ended', 'var', 'rebound', 'interlude'):
             state['pos'] = (px, pz)
             t = self.contact_t or 0.0
@@ -1552,19 +1838,72 @@ class Game:
                 state['mood'] = 'slip'
             elif self.result is not None:
                 state['mood'] = ('celebrate:' + (self.celebration or 'knee slide')) if self.result[0] else 'despair'
+                state['cel_t'] = self.phase_t
                 if self.result[0] and self.celebration == 'knee slide':
                     slide = min(1.0, self.phase_t / 0.8)
                     state['pos'] = (px + 1.5 * slide, pz - 2.2 * slide)
         return state
+
+    def _face(self, kicker):
+        """Expression for the taker (kicker=True) or the keeper."""
+        if self.result is not None and self.phase in ('result', 'replay', 'ended', 'interlude'):
+            happy = self.result[0] if kicker else not self.result[0]
+            return 'grin' if happy else 'gutted'
+        if kicker and self.phase in ('walk', 'ritual', 'aim', 'runup'):
+            nervous = self.stakes == 'must_score' or (self.player is not None and self.player.persona == 'kid')
+            return 'nervous' if nervous else 'focused'
+        return 'focused'
+
+    def _fig_info(self, p, slot):
+        """What the renderer needs to draw a character: look, shirt name and number, aura."""
+        return dict(look=p.look, name=p.name, number=p.number, aura=p.aura, glow=p.glow, kit=p.kit_override)
+
+    def bench_view(self):
+        """Named team-mates on the halfway line (the taker has walked off)."""
+        key = (self.kicker, id(self.player), self.comp.subs.get('p1') if hasattr(self.comp, 'subs') else 0,
+               self.comp.subs.get('p2') if hasattr(self.comp, 'subs') else 0)
+        if self._bench_cache and self._bench_cache[0] == key:
+            return self._bench_cache[1]
+        out = {}
+        for s in ('p1', 'p2'):
+            mates = [m for m in self.comp.bench(s) if m is not self.player][:4]
+            out[s] = [self._fig_info(m, s) for m in mates]
+        self._bench_cache = (key, out)
+        return out
+
+    def keeper_idle(self):
+        """The keeper's mannerism on the line while the taker walks up."""
+        fig = self.comp.figure(self.keeper_side(), True)
+        if fig is None or self.keeper.committed():
+            return None
+        if self.phase == 'walk' and 1.0 < self.phase_t < 2.6:
+            return fig.mannerism
+        if self.phase in ('ritual', 'aim') and (fig.signature == 'legs' or fig.persona == 'dancer'):
+            return 'legs'
+        return None
+
+    def captain_view(self):
+        """The captain walking with a nervous taker for the first part of the walk."""
+        if self.captain is None or self.phase != 'walk':
+            return None
+        r = min(1.0, self.phase_t / WALK_TIME)
+        wx, wz = walk_from()
+        sx, sz = kicker_start(self.runup, self.left_foot())
+        t = min(r, 0.55)
+        x, z = _lerp(wx, sx, t) + 0.75, _lerp(wz, sz, t)
+        return dict(pos=(x, z), yaw=math.degrees(math.atan2(-(sx - wx), -(sz - wz))) if r < 0.55 else 180.0,
+                    run=self.phase_t * 5.0 if r < 0.55 else 0.0, fig=self._fig_info(self.captain, self.kicker))
 
     def view(self):
         """Everything the renderer needs to draw the moving parts."""
         com, lean, arms = self.keeper.pose()
         ks = self.keeper_side()
         keeper_mood = None
-        if (self.phase == 'result' and self.phase_t > 0.9 and not self.result[0]
-                and self.kick and self.kick.keeper_touch):
-            keeper_mood = 'dance'
+        kfig = self.comp.figure(ks, True)
+        if self.phase == 'result' and self.phase_t > 0.9 and not self.result[0] and self.kick and (
+                self.kick.keeper_touch or (kfig is not None and kfig.persona == 'showman')):
+            keeper_mood = kfig.celebration if kfig is not None and kfig.celebration in CH.SAVE_CELEBRATIONS \
+                else 'dance'
         kicker_kit = dict(self.comp.kit(self.kicker))
         if self.comp.taker_is_keeper(self.kicker):
             kicker_kit['shirt'] = self.comp.keeper_colour(self.kicker)
@@ -1586,6 +1925,9 @@ class Game:
             net=self.net_hit, clock=self.clock, card=self.card,
             ev=bool(getattr(self, '_frame_events', None)) and self.phase in ('flight', 'result', 'rebound')
             and any(e in ('post', 'bar', 'catch', 'parry', 'goal') for e in self._frame_events),
+            keeper_fig=self._fig_info(kfig, ks) if kfig is not None else None, keeper_face=self._face(False),
+            keeper_idle=self.keeper_idle(), keeper_t=self.phase_t,
+            bench=self.bench_view(), captain=self.captain_view(),
         )
 
     def crowd_state(self):
@@ -1612,7 +1954,7 @@ class Game:
             bins=BINS if isinstance(self.comp, ChallengeComp) and self.comp.kind == 'bins' else None,
             first_person=(self.camera == 'keeper' and self.phase != 'replay' and self.is_human(ks)
                           and not self.photo),
-            kits=self.comp.kits)
+            kits=self.comp.kits, managers=isinstance(self.comp, (ShootoutComp, Knockout)))
 
     def current_view(self):
         if self.phase == 'replay' and self.replay:
@@ -1639,6 +1981,15 @@ class Game:
     # ------------------------------------------------------------------ input
     def key_down(self, key):
         """Returns 'quit' when the game should close."""
+        if self.ui == 'create':
+            self._create_key(key)
+            return None
+        if self.ui == 'select' and self.rebind is None:
+            if key in ('n', 'h'):
+                pass
+            else:
+                self._select_key(key)
+                return None
         if key == '\x1b':
             if self.rebind is not None:
                 self.rebind = None
@@ -1660,6 +2011,7 @@ class Game:
             return None
         if self.ui == 'menu':
             if key == 'c':
+                self.open_create('menu')
                 return None
             self._menu_key(key)
             return None
@@ -1683,7 +2035,7 @@ class Game:
             if self.playback is not None:
                 self.load_replay(self.playback_data)
             else:
-                self.start_match()
+                self._begin_match()
             return None
         if key == 'm' and (self.paused or self.phase in ('ended', 'replay')):
             self.to_menu()
@@ -1763,8 +2115,10 @@ class Game:
             return
         if self.phase == 'result' and self.result and self.result[0] and self.is_human(self.kicker):
             if key in (CONTROLS[self.kicker]['special'], CONTROLS[self.kicker]['extra2']):
-                i = CELEBRATIONS.index(self.celebration) if self.celebration in CELEBRATIONS else 0
-                self.celebration = CELEBRATIONS[(i + 1) % len(CELEBRATIONS)]
+                i = CELEB_CYCLE.index(self.celebration) if self.celebration in CELEB_CYCLE else 0
+                step = 1 if key == CONTROLS[self.kicker]['special'] else -1
+                self.celebration = CELEB_CYCLE[(i + step) % len(CELEB_CYCLE)]
+                self.phase_t = min(self.phase_t, 1.2)       # time to enjoy it
             return
         kicker, keeper_side = self.kicker, self.keeper_side()
         if self.phase not in ('aim', 'runup', 'flight') or self.forced:
@@ -1889,6 +2243,200 @@ class Game:
             if key in (k['left'], k['right'], k['down'], k['up']):
                 rb['smother'] = True
 
+    # ------------------------------------------------------- character select
+    def pick_plan(self):
+        """The steps of the select screen: who picks, from which role, how many."""
+        m = self.mode
+        if m == 'party':
+            return [dict(who=f'PLAYER {i + 1}: PICK YOUR CHARACTER', key=f'party{i}', role=None, count=1)
+                    for i in range(self.party_players)]
+        if m == 'career':
+            return [dict(who='CAREER: PICK YOUR AVATAR', key='avatar', role=self.role, count=1)]
+        steps = []
+        for s in (('p1', 'p2') if m == 'pvp' else ('p1',)):
+            team = self.team(s)['name']
+            steps.append(dict(who=f'{team}: PICK 5 TAKERS, IN ORDER', key=s, role='kick', count=5))
+            steps.append(dict(who=f'{team}: PICK YOUR KEEPER', key=s + '_keeper', role='keep', count=1))
+        return steps
+
+    def open_select(self):
+        self.ui = 'select'
+        self.select = dict(step=0, picked={}, cursor=0, filter='all', plan=self.pick_plan())
+
+    def select_list(self):
+        sel = self.select
+        step = sel['plan'][sel['step']]
+        return CH.filtered(sel['filter'], step['role'])
+
+    def select_current(self):
+        lst = self.select_list()
+        if not lst:
+            return None
+        return lst[self.select['cursor'] % len(lst)]
+
+    def _all_picked(self):
+        return {k for keys in self.select['picked'].values() for k in keys}
+
+    def _select_key(self, key):
+        sel = self.select
+        step = sel['plan'][sel['step']]
+        picked = sel['picked'].setdefault(step['key'], [])
+        lst = self.select_list()
+        if key == '\x1b':
+            self.ui = 'menu'
+            self.select = None
+        elif key in ('a', 'd') and lst:
+            sel['cursor'] = (sel['cursor'] + (1 if key == 'd' else -1)) % len(lst)
+        elif key in ('w', 's'):
+            i = CH.FILTERS.index(sel['filter'])
+            for _ in range(len(CH.FILTERS)):
+                i = (i + (1 if key == 's' else -1)) % len(CH.FILTERS)
+                if CH.filtered(CH.FILTERS[i], step['role']):
+                    break
+            sel['filter'] = CH.FILTERS[i]
+            sel['cursor'] = 0
+        elif key in ('\r', ' ') and lst:
+            ch = self.select_current()
+            if CH.locked(ch, self.stats):
+                name = achievements.NAMES.get(ch['unlock'], ch['unlock'])
+                self.toast = (f"{ch['name']} is locked: unlock the '{name}' achievement", self.clock)
+            elif ch['key'] in self._all_picked():
+                self.toast = (f"{ch['name']} is already picked", self.clock)
+            else:
+                picked.append(ch['key'])
+                self._select_advance()
+        elif key == 'x':
+            if picked:
+                picked.pop()
+            elif sel['step'] > 0:
+                sel['step'] -= 1
+                sel['picked'][sel['plan'][sel['step']]['key']].pop()
+                sel['cursor'] = 0
+        elif key == 'r':
+            pool = [c for c in CH.ROSTER if (step['role'] is None or c['role'] == step['role'])
+                    and not CH.locked(c, self.stats) and c['key'] not in self._all_picked()]
+            self.crng.shuffle(pool)
+            while len(picked) < step['count'] and pool:
+                picked.append(pool.pop()['key'])
+            self._select_advance()
+        elif key == 'c':
+            self.open_create('select')
+
+    def _select_advance(self):
+        sel = self.select
+        step = sel['plan'][sel['step']]
+        if len(sel['picked'].get(step['key'], [])) < step['count']:
+            return
+        sel['step'] += 1
+        sel['cursor'] = 0
+        sel['filter'] = 'all'
+        if sel['step'] >= len(sel['plan']):
+            picks = dict(sel['picked'])
+            if self.mode == 'party':
+                picks['party'] = [picks[f'party{i}'][0] for i in range(self.party_players)]
+            self.picks = picks
+            self.select = None
+            self._begin_match()
+
+    # ------------------------------------------------------- create-a-player
+    def open_create(self, back):
+        self.ui = 'create'
+        self.create = dict(ch=CH.blank_character(), field=0, typing=False, back=back)
+
+    def _create_key(self, key):
+        cr = self.create
+        ch = cr['ch']
+        field = CH.CREATE_FIELDS[cr['field']]
+        if cr['typing']:
+            if key in ('\r', '\x1b'):
+                cr['typing'] = False
+            elif key in ('\x08', '\x7f'):
+                ch['name'] = ch['name'][:-1]
+            elif len(key) == 1 and (key.isalnum() or key in ' .-') and len(ch['name']) < 12:
+                ch['name'] = (ch['name'] + key).upper()
+            return
+        if key == '\x1b':
+            self._leave_create()
+        elif key in ('w', 's'):
+            cr['field'] = (cr['field'] + (1 if key == 's' else -1)) % len(CH.CREATE_FIELDS)
+        elif key in ('a', 'd'):
+            self.create_change(field, 1 if key == 'd' else -1)
+        elif key in ('\r', ' '):
+            if field == 'name':
+                cr['typing'] = True
+                ch['name'] = ''
+            elif field == 'save':
+                self.save_created()
+            else:
+                self.create_change(field, 1)
+
+    def _leave_create(self):
+        back = self.create['back'] if self.create else 'menu'
+        self.create = None
+        self.ui = 'select' if back == 'select' and self.select else 'menu'
+
+    def create_options(self, field):
+        ch = self.create['ch']
+        keep = ch['role'] == 'keep'
+        return {
+            'role': ['kick', 'keep'], 'foot': ['R', 'L'], 'women': [False, True],
+            'hair': CH.HAIRS, 'hc': list(CH.HAIR_COLOURS), 'beard': CH.BEARDS, 'boots': list(CH.BOOTS),
+            'persona': list(CH.KEEPER_PERSONAS if keep else CH.TAKER_PERSONAS),
+            'signature': [None] + ([k for k in CH.SIGNATURES if k not in CH.SIG_SHOT and k not in ('disguise', 'stance')]
+                                   if keep else [k for k in CH.SIGNATURES if k in CH.SIG_SHOT or k in
+                                                 ('disguise', 'stance')]),
+            'celebration': list(CH.SAVE_CELEBRATIONS if keep else CH.CELEBRATIONS),
+        }.get(field)
+
+    def create_change(self, field, step):
+        ch = self.create['ch']
+        lk = ch['look']
+        opts = self.create_options(field)
+        if opts is not None:
+            target = lk if field in ('hair', 'hc', 'beard', 'boots') else ch
+            cur = target.get(field)
+            i = opts.index(cur) if cur in opts else 0
+            target[field] = opts[(i + step) % len(opts)]
+            if field == 'role':
+                keep = ch['role'] == 'keep'
+                ch['persona'] = 'wall' if keep else 'steady'
+                ch['signature'] = None
+                ch['celebration'] = 'roar' if keep else 'knee slide'
+                lk['gloves'] = 'white' if keep else None
+                lk['sleeves'] = 'long' if keep else None
+                ch['number'] = 1 if keep else 9
+        elif field == 'number':
+            ch['number'] = (ch['number'] + step) % 100
+        elif field == 'skin':
+            lk['skin'] = (lk['skin'] + step) % len(CH.SKINS)
+        elif field in ('h', 'w'):
+            lk[field] = round(max(0.88, min(1.15, lk[field] + 0.03 * step)), 2)
+        elif field in ('composure', 'power', 'placement'):
+            v = round(ch[field] + 0.05 * step, 2)
+            if 0.3 <= v <= 0.95 and (step < 0 or CH.budget_left(ch) >= 0.05 - 1e-9):
+                ch[field] = v
+
+    def save_created(self):
+        ch = CH.valid_character(dict(self.create['ch'], key=None), 'custom')
+        if ch is None:
+            self.toast = ('Give your player a name first', self.clock)
+            return None
+        ch = CH.add_extra(ch)
+        if CH.save_custom(self.players_file):
+            self.toast = (f"{ch['name']} saved: pick them from 'Yours and mods' on the select screen", self.clock)
+        else:
+            self.toast = (f"{ch['name']} added for this session (could not save the file)", self.clock)
+        if self.select:
+            self.select['filter'] = 'custom'
+            self.select['cursor'] = 0
+        self._leave_create()
+        return ch
+
+    def create_player(self):
+        """The player being made, as a squad.Player for the preview."""
+        ch = CH.valid_character(dict(self.create['ch'], key=None, name=self.create['ch']['name'] or 'NEW'), 'custom')
+        return CH.make_player(ch or CH.blank_character())
+
     # ------------------------------------------------------------------- menu
     def _menu_key(self, key):
         if self.show_achievements:
@@ -1975,8 +2523,17 @@ class Game:
             self.captions_on = not self.captions_on
         elif row == 'phone':
             self.phone = not self.phone
+        elif row == 'squads':
+            self.squads = cycle(SQUAD_MODES, self.squads)
 
     def start_match(self):
+        """From the menu: pick characters first if the mode asks for it."""
+        if self.squads == 'pick' and self.mode in PICK_MODES and self.playback is None:
+            self.open_select()
+            return
+        self._begin_match()
+
+    def _begin_match(self):
         self.ui = 'playing'
         self.playback = None
         if self.mode == 'famous':

@@ -9,7 +9,7 @@ from OpenGL.GL import *  # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
 from OpenGL.GLUT import *  # noqa: F401,F403
 
-from . import achievements, config as C, controls, stats
+from . import achievements, characters as CH, config as C, controls, stats
 from .controls import CONTROLS
 from .game import DRILL_ZONES, MODE_LABELS
 from .modes import (CAREER_TRAITS, CAREER_XP, CHALLENGES, ROUND_NAMES, ChallengeComp, KingOfTheGoal,
@@ -337,7 +337,10 @@ def prompts(g):
             if g.mode == 'training':
                 lines.append(f"T trajectory preview {'ON' if g.preview else 'OFF'}")
         else:
-            who = 'Drill machine' if isinstance(g.comp, TrainingComp) else f"{g.taker_label()} ({g.profile['name']})"
+            style = g.profile['name']
+            if g.player is not None and g.player.persona in CH.TAKER_PERSONAS and g.player.persona != 'steady':
+                style = CH.TAKER_PERSONAS[g.player.persona][0]
+            who = 'Drill machine' if isinstance(g.comp, TrainingComp) else f"{g.taker_label()} ({style})"
             lines.append(f'{who} is stepping up...')
         if g.is_human(keeper):
             k = CONTROLS[keeper]
@@ -359,7 +362,8 @@ def prompts(g):
         lines.append(f"{key_name(CONTROLS[keeper]['shoot'])}: STRETCH!")
     elif g.phase == 'result' and g.result and g.result[0] and g.is_human(kicker) and g.celebration:
         k = CONTROLS[kicker]
-        lines.append(f"Celebration: {g.celebration}  ({key_name(k['special'])} to change)")
+        lines.append(f"Celebration: {CH.CELEBRATIONS.get(g.celebration, g.celebration)}  "
+                     f"({key_name(k['special'])}/{key_name(k['extra2'])} to change)")
     y = 24
     for s in reversed(lines):
         tw = text_width(s, SMALL)
@@ -424,6 +428,8 @@ def toss_panel(g):
             hint = 'The managers are picking their takers...'
     if hint:
         text(500, 370, hint, SMALL, (0.85, 0.85, 0.9), 'center')
+    ref = g.ref
+    text(500, 345, f"Referee: {ref['name']}  ({ref['label']})", SMALL, (0.75, 0.85, 1.0), 'center')
     if g.toss_stage == 'sub':
         for i, slot in enumerate(('p1', 'p2')):
             if g.controller(slot):
@@ -466,9 +472,53 @@ def lineup_panel(g, slot, x, i):
         ry -= 18
 
 
+def story_card(g):
+    title, body = g.story_beat
+    rect(170, 330, 660, 170, (0.04, 0.05, 0.09), 0.9)
+    outline(170, 330, 660, 170, GOLD)
+    big_text(500, 455, title, 30, GOLD, 3)
+    panel_text(500, 420, wrap(body, 600), SMALL, WHITE, 20)
+
+
+def bubble(x, y, s, colour=(0.97, 0.97, 0.95), tail_down=True):
+    """A speech bubble with its tail pointing at whoever is talking."""
+    lines = wrap(s, 240)
+    w = max(text_width(ln, SMALL) for ln in lines) + 24
+    h = 18 * len(lines) + 14
+    rect(x - w / 2, y, w, h, colour, 0.95)
+    glColor4f(colour[0], colour[1], colour[2], 0.95)
+    glBegin(GL_TRIANGLES)
+    if tail_down:
+        glVertex2f(x - 10, y)
+        glVertex2f(x + 4, y)
+        glVertex2f(x - 16, y - 16)
+    else:
+        glVertex2f(x - 8, y + h)
+        glVertex2f(x + 8, y + h)
+        glVertex2f(x, y + h + 14)
+    glEnd()
+    yy = y + h - 22
+    for ln in lines:
+        text(x, yy, ln, SMALL, (0.05, 0.05, 0.1), 'center')
+        yy -= 18
+
+
+def banter(g):
+    """Pre-kick banter between the taker and the keeper, during the ritual."""
+    if not g.banter or g.phase not in ('ritual', 'aim') or (g.phase == 'aim' and g.phase_t > 1.6):
+        return
+    kick_line, keep_line = g.banter
+    bubble(250, 330, kick_line)
+    if g.phase_t > 0.7 or g.phase == 'aim':
+        bubble(560, 520, keep_line, (1.0, 0.95, 0.75))
+
+
 def banners(g):
     if g.phase == 'intro' and g.story:
         intro_card(g)
+        return
+    if g.phase == 'pre' and g.story_beat:
+        story_card(g)
         return
     if g.phase == 'toss':
         toss_panel(g)
@@ -537,18 +587,30 @@ def lower_third(g):
     if not info:
         return
     x, y, w, h = 40, 200, 430, 92
+    extra = [s for s in (info.get('full'), info.get('tag')) if s]
+    traits = [s for s in (info.get('persona'), info.get('signature')) if s]
+    if extra or traits:
+        h += 22
     rect(x, y, w, h, (0.04, 0.05, 0.1), 0.9)
     rect(x, y, 8, h, g.comp.kit(g.kicker)['shirt'])
     text(x + 20, y + h - 26, info['label'].upper(), MEDIUM, WHITE)
     sub = '  |  FRESH SUB' if info['sub'] else ''
     text(x + w - 12, y + h - 26, info['team'][:14] + sub, SMALL, GOLD, 'right')
+    if extra or traits:
+        text(x + 20, y + h - 46, '  |  '.join(extra)[:44], SMALL, (0.85, 0.85, 0.9))
+        text(x + w - 12, y + h - 46, ' / '.join(traits), SMALL, GOLD, 'right')
+    if info.get('aura', 0) >= 0.3:
+        glow = info.get('glow') or GOLD
+        text(x + w - 12, y + 8, f"AURA {100 * info['aura']:.0f}", SMALL, glow, 'right')
     for n, (name, val) in enumerate((('Composure', info['composure']), ('Power', info['power']),
                                      ('Placement', info['placement']))):
         bx = x + 20 + n * 135
         text(bx, y + 40, name, SMALL, (0.8, 0.8, 0.85))
         rect(bx, y + 26, 120, 8, GREY, 0.6)
         rect(bx, y + 26, 120 * val, 8, GREEN if val > 0.6 else GOLD if val > 0.4 else RED)
-    text(x + 20, y + 8, info['foot'] + ('  |  ' + info['record'] if info['record'] else ''), SMALL, WHITE)
+    form = info.get('form', 0)
+    form_txt = {2: '  |  Form: red hot', 1: '  |  Form: good', -1: '  |  Form: shaky', -2: '  |  Form: cold'}.get(form, '')
+    text(x + 20, y + 8, info['foot'] + ('  |  ' + info['record'] if info['record'] else '') + form_txt, SMALL, WHITE)
 
 
 def notes_panel(g):
@@ -762,7 +824,8 @@ def help_lines():
         'P2: ' + keys(p2),
         'C camera  |  Y photo mode (WASD QE move, ENTER saves)  |  N sound  |  P pause  |  H help',
         'After a match: V replay  |  F replay file  |  G GIF  |  B share (ghost duel, daily grid)  |  TAB report',
-        'Menu: K rebind keys, L achievements. --replay FILE, --duel FILE, --host / --join IP for LAN.',
+        'Menu: K rebind keys, L achievements, C create a player. Characters row: club squads, a random draft',
+        'of icons, or pick your own on the select screen. --replay FILE, --duel FILE, --host / --join IP for LAN.',
     ]
 
 
@@ -819,6 +882,7 @@ MENU_LABELS = {
     'weather': 'Weather', 'daytime': 'Kick-off', 'assist': 'Assist', 'captions': 'Sound captions',
     'phone': 'Phone controller', 'start': '', 'order': 'Kick order', 'team1': 'Your team', 'team2': 'Opponents',
     'challenge': 'Challenge', 'ghost': 'Ghost', 'variant': 'Pitch', 'commentary': 'Commentary',
+    'squads': 'Characters',
 }
 MODE_NAMES = {'pvc': 'Player v CPU', 'pvp': 'Player v Player', 'famous': 'Famous shootouts',
               'match': "90th-minute penalty", 'party': 'Party (3-8 friends)', 'training': 'Training ground',
@@ -871,6 +935,14 @@ def menu_value(g, row):
         return 'On' if g.captions_on else 'Off'
     if row == 'phone':
         return 'On' if g.phone else 'Off'
+    if row == 'squads':
+        if g.mode == 'career':
+            saved = CH.get((g.stats['career'].get(g.role) or {}).get('char') or '')
+            return {'club': 'Plain (no avatar)', 'legends': f"Avatar: {saved['name']}" if saved else 'Random icon',
+                    'pick': 'Pick your avatar'}[g.squads]
+        if g.mode == 'party':
+            return {'club': 'Plain colours', 'legends': 'Random characters', 'pick': 'Everyone picks one'}[g.squads]
+        return {'club': 'Club squads', 'legends': 'Icons draft (random)', 'pick': 'Pick your takers'}[g.squads]
     return ''
 
 
@@ -906,7 +978,8 @@ def menu(g):
         MENU_LAYOUT[(row, 1)] = (bx + 270, y, 34, bh)
         MENU_LAYOUT[(row, 0)] = (bx + 38, y, 228, bh)
         y -= step
-    text(500, 95, 'W/S move  |  A/D change  |  ENTER start  |  K rebind keys  |  L achievements  |  H how to play',
+    text(500, 95, 'W/S move  |  A/D change  |  ENTER start  |  K keys  |  L achievements  |  C create a player  |  '
+         'H help',
          SMALL, (0.8, 0.8, 0.85), 'center')
     text(500, 70, stats.summary(g.stats), SMALL, (0.7, 0.75, 0.85), 'center')
     text(500, 30, 'N toggles sound' + ('' if g.audio and g.audio.enabled else ' (sound unavailable: pip install pygame)'),
@@ -981,7 +1054,11 @@ def menu_click(g, x, y):
 
 def draw(g):
     begin()
-    if g.ui == 'menu':
+    if g.ui == 'select':
+        select_screen(g)
+    elif g.ui == 'create':
+        create_screen(g)
+    elif g.ui == 'menu':
         menu(g)
         if g.rebind is not None:
             rebind_overlay(g)
@@ -996,6 +1073,7 @@ def draw(g):
             power_bar(g)
         prompts(g)
         banners(g)
+        banter(g)
         notes_panel(g)
         coach_panel(g)
         commentary_line(g)
@@ -1011,3 +1089,194 @@ def draw(g):
     if g.show_help:
         help_overlay()
     end()
+
+
+# ------------------------------------------------------- character screens
+def _fig(p):
+    return dict(look=p.look, name=p.name, number=p.number, aura=p.aura, glow=p.glow, kit=p.kit_override)
+
+
+def showcase_subject(g):
+    """Who stands on the turntable: (fig, is a keeper, celebration or None)."""
+    if g.ui == 'create' and g.create:
+        p = g.create_player()
+    elif g.ui == 'select' and g.select:
+        ch = g.select_current()
+        if ch is None:
+            return None, False, None
+        p = CH.make_player(ch)
+    else:
+        return None, False, None
+    cel = p.celebration if (g.clock % 8.0) > 4.5 else None
+    if p.keeper and cel not in CH.SAVE_CELEBRATIONS:
+        cel = 'dance' if cel else None
+    return _fig(p), p.keeper, cel
+
+
+def _bar(x, y, label, val, w=200):
+    text(x, y + 12, label, SMALL, (0.8, 0.8, 0.85))
+    rect(x, y, w, 8, GREY, 0.6)
+    rect(x, y, w * max(0.0, min(1.0, val)), 8, GREEN if val > 0.75 else GOLD if val > 0.5 else RED)
+    text(x + w + 8, y - 2, f'{100 * val:.0f}', SMALL, WHITE)
+
+
+def character_card(g, p, x, y, w, h, locked=False, unlock=None):
+    """Stats, personality, signature and celebration for one character."""
+    rect(x, y, w, h, (0.04, 0.05, 0.09), 0.92)
+    outline(x, y, w, h, p.glow or GOLD)
+    top = y + h
+    big_text(x + w / 2, top - 52, p.name, 30, p.glow or GOLD, 3)
+    text(x + w / 2, top - 78, f"{p.full}  |  No. {p.number}  |  {'Left' if p.foot == 'L' else 'Right'} foot",
+         SMALL, WHITE, 'center')
+    text(x + w / 2, top - 98, f"{CH.ERAS.get(p.era, '')}  |  {p.tag}"[:70], SMALL, (0.85, 0.85, 0.9), 'center')
+    yy = top - 135
+    if p.keeper:
+        _bar(x + 24, yy, 'Reach bonus', 0.5 + 4.0 * p.reach)
+        _bar(x + 24, yy - 34, 'Speed bonus', 0.5 + 8.0 * p.speed)
+        _bar(x + 24, yy - 68, 'Kicking (if it goes round)', (p.composure + p.power + p.placement) / 3)
+        personas = CH.KEEPER_PERSONAS
+        cels = CH.SAVE_CELEBRATIONS
+    else:
+        _bar(x + 24, yy, 'Composure', p.composure)
+        _bar(x + 24, yy - 34, 'Power', p.power)
+        _bar(x + 24, yy - 68, 'Placement', p.placement)
+        personas = CH.TAKER_PERSONAS
+        cels = CH.CELEBRATIONS
+    _bar(x + 24, yy - 102, 'Aura', p.aura)
+    yy -= 140
+    pname, pdesc = personas.get(p.persona, ('', ''))
+    text(x + 24, yy, pname.upper(), MEDIUM, GOLD)
+    for ln in wrap(pdesc, w - 48)[:2]:
+        yy -= 18
+        text(x + 24, yy, ln, SMALL, WHITE)
+    if p.signature in CH.SIGNATURES:
+        sname, sdesc = CH.SIGNATURES[p.signature]
+        yy -= 28
+        text(x + 24, yy, 'SIGNATURE: ' + sname.upper(), SMALL, GOLD)
+        for ln in wrap(sdesc, w - 48)[:2]:
+            yy -= 18
+            text(x + 24, yy, ln, SMALL, WHITE)
+    if p.celebration:
+        yy -= 28
+        text(x + 24, yy, 'CELEBRATION: ' + cels.get(p.celebration, CH.CELEBRATIONS.get(p.celebration, p.celebration)),
+             SMALL, GOLD)
+    form = g.stats.get('form', {}).get(p.char or '', 0)
+    if form:
+        yy -= 22
+        text(x + 24, yy, {2: 'Form: red hot', 1: 'Form: good', -1: 'Form: shaky', -2: 'Form: cold'}[form], SMALL,
+             GREEN if form > 0 else RED)
+    if locked:
+        rect(x, y, w, 44, (0.25, 0.05, 0.05), 0.9)
+        text(x + w / 2, y + 16, f"LOCKED: unlock '{achievements.NAMES.get(unlock, unlock)}'", MEDIUM, WHITE, 'center')
+
+
+def select_screen(g):
+    sel = g.select
+    step = sel['plan'][sel['step']]
+    big_text(500, 740, step['who'], 26, GOLD, 3)
+    text(500, 712, f"Step {sel['step'] + 1} of {len(sel['plan'])}", SMALL, (0.8, 0.8, 0.85), 'center')
+    # Filter tabs
+    tabs = [f for f in CH.FILTERS if CH.filtered(f, step['role'])]
+    x = 500 - 116 * len(tabs) / 2
+    for f in tabs:
+        on = f == sel['filter']
+        rect(x + 2, 670, 112, 26, (0.16, 0.45, 0.25) if on else (0.08, 0.09, 0.14), 0.92)
+        text(x + 58, 678, CH.FILTER_LABELS[f], SMALL, WHITE, 'center')
+        x += 116
+    lst = g.select_list()
+    ch = g.select_current()
+    if ch is None:
+        text(500, 400, 'Nobody here yet', MEDIUM, WHITE, 'center')
+        return
+    p = CH.make_player(ch)
+    character_card(g, p, 590, 120, 390, 530, CH.locked(ch, g.stats), ch.get('unlock'))
+    # Carousel of names under the figure
+    i = sel['cursor'] % len(lst)
+    picked_all = g._all_picked()
+    for k in range(-3, 4):
+        c = lst[(i + k) % len(lst)]
+        cx = 290 + k * 82
+        col = GOLD if k == 0 else (0.55, 0.55, 0.6) if CH.locked(c, g.stats) or c['key'] in picked_all else WHITE
+        if k == 0:
+            rect(cx - 41, 128, 82, 24, (0.16, 0.45, 0.25), 0.9)
+        text(cx, 135, c['name'][:9], SMALL, col, 'center')
+    text(290, 106, f'{i + 1} / {len(lst)}', SMALL, (0.8, 0.8, 0.85), 'center')
+    # Picks so far
+    y = 640
+    for st in sel['plan']:
+        keys = sel['picked'].get(st['key'], [])
+        if not keys:
+            continue
+        names = ', '.join(CH.get(k)['name'] for k in keys if CH.get(k))
+        text(20, y, f"{st['key'].replace('_keeper', ' keeper').upper()}: {names}"[:60], SMALL, GREEN)
+        y -= 18
+    rect(0, 38, W, 48, (0.02, 0.03, 0.06), 0.8)
+    text(500, 70, 'A/D browse  |  W/S filter  |  ENTER pick  |  X undo  |  R random  |  C create a player  |  '
+         'ESC back', SMALL, WHITE, 'center')
+    text(500, 48, 'Real names are game caricatures: famous moments and celebrations, not real ratings.', SMALL,
+         (0.6, 0.6, 0.65), 'center')
+
+
+CREATE_LABELS = {'name': 'Name', 'role': 'Position', 'number': 'Number', 'foot': 'Foot', 'women': 'Plays in',
+                 'skin': 'Skin tone', 'hair': 'Hair', 'hc': 'Hair colour', 'beard': 'Beard', 'h': 'Height',
+                 'w': 'Build', 'boots': 'Boots', 'persona': 'Personality', 'signature': 'Signature move',
+                 'celebration': 'Celebration', 'composure': 'Composure', 'power': 'Power', 'placement': 'Placement',
+                 'save': ''}
+
+
+def _create_value(g, f):
+    ch = g.create['ch']
+    lk = ch['look']
+    if f == 'name':
+        return ch['name'] + ('_' if g.create['typing'] and int(g.clock * 2) % 2 == 0 else '')
+    if f == 'role':
+        return 'Goalkeeper' if ch['role'] == 'keep' else 'Outfield (takes kicks)'
+    if f == 'women':
+        return "Women's game" if ch['women'] else "Men's game"
+    if f == 'foot':
+        return 'Left' if ch['foot'] == 'L' else 'Right'
+    if f in ('hair', 'hc', 'boots'):
+        return str(lk.get(f)).capitalize()
+    if f == 'beard':
+        return (lk.get('beard') or 'None').capitalize()
+    if f == 'skin':
+        return f"Tone {lk['skin'] + 1}"
+    if f in ('h', 'w'):
+        return f'{100 * lk[f]:.0f}%'
+    if f == 'persona':
+        return (CH.KEEPER_PERSONAS if ch['role'] == 'keep' else CH.TAKER_PERSONAS)[ch['persona']][0]
+    if f == 'signature':
+        return CH.SIGNATURES[ch['signature']][0] if ch['signature'] else 'None'
+    if f == 'celebration':
+        return (CH.SAVE_CELEBRATIONS if ch['role'] == 'keep' else CH.CELEBRATIONS).get(ch['celebration'], 'None')
+    if f in ('composure', 'power', 'placement'):
+        return f'{100 * ch[f]:.0f}'
+    if f == 'number':
+        return str(ch['number'])
+    return ''
+
+
+def create_screen(g):
+    cr = g.create
+    big_text(500, 745, 'CREATE A PLAYER', 30, GOLD, 3)
+    x, top, w = 560, 700, 420
+    rect(x, 40, w, top - 40, (0.04, 0.05, 0.09), 0.92)
+    outline(x, 40, w, top - 40, GOLD)
+    y = top - 34
+    for i, f in enumerate(CH.CREATE_FIELDS):
+        focused = i == cr['field']
+        if f == 'save':
+            _button(x + 110, y - 8, 200, 30, 'SAVE PLAYER', True, focused)
+            break
+        if focused:
+            rect(x + 8, y - 6, w - 16, 22, (0.16, 0.4, 0.22), 0.9)
+        text(x + 20, y, CREATE_LABELS[f], SMALL, GOLD if focused else WHITE)
+        text(x + w - 20, y, _create_value(g, f), SMALL, WHITE, 'right')
+        y -= 33
+    left = CH.budget_left(cr['ch'])
+    text(x + w / 2, 50, f'Rating points left: {100 * left:.0f}', SMALL, GREEN if left > 0 else GOLD, 'center')
+    rect(10, 40, 540, 46, (0.02, 0.03, 0.06), 0.8)
+    hint = ('Type the name, ENTER to finish' if cr['typing'] else
+            'W/S field  |  A/D change  |  ENTER edit name or save  |  ESC back')
+    text(280, 70, hint, SMALL, WHITE, 'center')
+    text(280, 50, 'Saved to players.json in the .penalty_shootout folder', SMALL, (0.6, 0.6, 0.65), 'center')

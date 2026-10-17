@@ -20,7 +20,7 @@ from .controls import CONTROLS
 PORT = 50505
 STEP = 1.0 / 60.0
 DELAY = 4                # frames of input delay: hides the round trip on a LAN
-SETTINGS = ('kicks_per_side', 'order', 'variant', 'weather', 'daytime', 'assist')
+SETTINGS = ('kicks_per_side', 'order', 'variant', 'weather', 'daytime', 'assist', 'squads')
 GLOBAL_KEYS = ('p', 'r', 'v')          # pause, restart, watch the replay: both screens
 LOCAL_KEYS = ('c', 'h', 'n', 'f', 'b', '\t')   # camera, help, sound, files, share, report: this screen only
 
@@ -133,8 +133,10 @@ class NetSession:
         controls.reset()                    # both games read the same bindings for each side
         game.mode = 'pvp'
         game.local_slot = self.slot
+        if game.squads == 'pick':
+            game.squads = 'legends'          # no select screen over the network: a random draft
         game.rng = random.Random(seed)
-        game.start_match()
+        game._begin_match()
 
     # --------------------------------------------------------------- input
     def key(self, game, key, down):

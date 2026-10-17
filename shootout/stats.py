@@ -9,7 +9,7 @@ FIELDS = ('matches', 'wins', 'kicks', 'goals', 'faced', 'saves')
 # Other saved records: achievements, adaptive difficulty level, career,
 # challenge bests, daily results, and each shirt number's record from the spot
 EXTRA = {'achievements': list, 'auto_level': float, 'career': dict, 'challenges': dict, 'daily': dict,
-         'takers': dict, 'tutorial_done': bool}
+         'takers': dict, 'tutorial_done': bool, 'form': dict}
 ZONES = ['left high', 'centre high', 'right high', 'left low', 'centre low', 'right low']
 
 

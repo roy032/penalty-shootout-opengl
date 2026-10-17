@@ -164,10 +164,11 @@ def _valid(sc):
 
 
 def load_mods(directory=MOD_DIR, teams=None):
-    """Add famous shootouts (and team kits) from JSON files in the mods folder.
-    A file holds {"scenarios": [...]} and/or {"teams": [...]}, using the same
-    fields as the built-in ones. Bad entries are skipped. Returns how many
-    were added."""
+    """Add famous shootouts, team kits and characters from JSON files in the
+    mods folder. A file holds {"scenarios": [...]}, {"teams": [...]} and/or
+    {"players": [...]}, using the same fields as the built-in ones (players:
+    see characters.valid_character). Bad entries are skipped. Returns how
+    many were added."""
     added = 0
     try:
         names = sorted(f for f in os.listdir(directory) if f.endswith('.json'))
@@ -187,6 +188,13 @@ def load_mods(directory=MOD_DIR, teams=None):
                 sc.setdefault('history', '')
                 SCENARIOS.append(sc)
                 added += 1
+        if isinstance(data, dict) and isinstance(data.get('players'), list):
+            from . import characters
+            for d in data['players']:
+                ch = characters.valid_character(d, 'mod') if isinstance(d, dict) else None
+                if ch:
+                    characters.add_extra(ch)
+                    added += 1
         if teams is not None and isinstance(data, dict):
             for t in data.get('teams', []):
                 try:

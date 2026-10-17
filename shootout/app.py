@@ -48,6 +48,12 @@ def camera_eye(g, view):
             return (9.0, 1.6, C.GOAL_LINE_Z + 2.5), (0.0, 1.0, C.GOAL_LINE_Z + 0.5)
         # Reverse angle from behind the net, the classic replay shot
         return (4.5, 2.3, C.GOAL_LINE_Z - 6.5), (0.0, 1.0, C.GOAL_LINE_Z + 4.0)
+    if g.phase == 'ritual' and g.camera == 'broadcast' and g.phase_t > 0.62 * g.ritual_len:
+        # Close-up on the taker's face as he backs off to start the run-up
+        sx, sz = view['shooter']['pos']
+        yaw = math.radians(view['shooter']['yaw'])
+        fx, fz = -math.sin(yaw), -math.cos(yaw)          # the way he is facing
+        return (sx + 1.35 * fx + 0.35, 1.75, sz + 1.35 * fz), (sx, 1.62, sz)
     if g.phase in ('walk', 'ritual') and g.camera == 'broadcast':
         # Tracking shot behind the kicker on the long walk
         sx, sz = view['shooter']['pos']
@@ -96,8 +102,35 @@ def setup_camera(g, view):
     gluLookAt(eye[0], eye[1], eye[2], look[0], look[1], look[2], 0, 1, 0)
 
 
+def display_showcase(g):
+    """The select and create screens: a character on a turntable, then the HUD."""
+    w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    render.set_environment(g.daytime, 'clear')
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glViewport(0, 0, w, h)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(40.0, w / float(h), 0.05, 250.0)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    eye_x = 1.9                             # the figure sits left of centre, the stats panel right
+    gluLookAt(eye_x, 1.35, C.SPOT_Z + 6.4, eye_x, 1.05, C.SPOT_Z, 0, 1, 0)
+    fig, keeper, cel = hud.showcase_subject(g)
+    if fig is not None:
+        kit = dict(C.KITS['p1'])
+        render.draw_showcase(fig, keeper, kit, g.clock, g.daytime, cel)
+    else:
+        render.draw_showcase(None, False, dict(C.KITS['p1']), g.clock, g.daytime)
+    hud.draw(g)
+    glutSwapBuffers()
+
+
 def display():
     g = game
+    if g.ui in ('select', 'create'):
+        display_showcase(g)
+        return
     view = g.current_view()
     env = g.scene_env()
     render.set_environment(env['daytime'], env['weather'])
@@ -284,6 +317,12 @@ def keyboard_up(key, x, y):
 
 
 def special(key, x, y):
+    if game.ui in ('select', 'create'):
+        k = {GLUT_KEY_LEFT: 'a', GLUT_KEY_RIGHT: 'd', GLUT_KEY_UP: 'w', GLUT_KEY_DOWN: 's'}.get(key)
+        if k and not (game.create and game.create['typing']):
+            game.key_down(k)
+            game.key_up(k)
+        return
     if game.photo:
         cam = game.photo_cam
         if key in (GLUT_KEY_LEFT, GLUT_KEY_RIGHT):

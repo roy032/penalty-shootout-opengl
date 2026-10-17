@@ -7,7 +7,7 @@ slot is computer-controlled.
 
 import random
 
-from . import config as C, squad as S
+from . import characters as CH, config as C, squad as S
 from .rules import Shootout
 
 
@@ -51,6 +51,19 @@ class Competition:
     def player(self, slot):
         return None
 
+    def keeper_player(self, slot):
+        """The squad.Player keeping goal for slot, if there is one."""
+        return None
+
+    def figure(self, slot, keeping):
+        """Who to draw for slot (their look, celebration and aura). Usually the
+        player in the game; a career avatar is only for show."""
+        return self.keeper_player(slot) if keeping else self.player(slot)
+
+    def bench(self, slot):
+        """Team-mates waiting arm in arm on the halfway line."""
+        return []
+
     def taker(self, slot):
         p = self.player(slot)
         return p.label if p else None
@@ -90,14 +103,19 @@ class ShootoutComp(Competition):
     """A normal shootout (also used for famous scenarios and PvP)."""
 
     def __init__(self, names, kits, control, first='p1', kicks=5, results=None, order='abab', rng=None,
-                 strength=(0.55, 0.55)):
+                 strength=(0.55, 0.55), squads=None, fixed=()):
         super().__init__(names, kits, control)
         self.rules = Shootout(first=first, kicks_per_side=kicks, order=order)
         if results:
             self.rules.results = {s: list(r) for s, r in results.items()}
         rng = rng or random.Random(0)
-        self.squads = {s: S.make_squad(rng, st) for s, st in zip(('p1', 'p2'), strength)}
-        self.order = {s: S.ai_order(rng, sq) for s, sq in self.squads.items()}
+        if squads:
+            # Character squads; a side that picked its takers keeps their order
+            self.squads = {s: list(sq) for s, sq in squads.items()}
+            self.order = {s: list(sq) if s in fixed else S.ai_order(rng, sq) for s, sq in self.squads.items()}
+        else:
+            self.squads = {s: S.make_squad(rng, st) for s, st in zip(('p1', 'p2'), strength)}
+            self.order = {s: S.ai_order(rng, sq) for s, sq in self.squads.items()}
         self.subs = {'p1': 0, 'p2': 0}
 
     @property
@@ -134,6 +152,14 @@ class ShootoutComp(Competition):
 
     def slot_index(self, slot):
         return self.rules.kicks(slot) % len(self.order[slot])
+
+    def keeper_player(self, slot):
+        if self.emergency[slot]:
+            return None
+        return next((p for p in self.order[slot] if p.keeper), None)
+
+    def bench(self, slot):
+        return [p for p in self.order[slot] if not p.keeper][:6]
 
     def summary_line(self):
         r = self.rules
@@ -217,8 +243,9 @@ class KingOfTheGoal(Competition):
     keeps once."""
     sudden_death_label = False
 
-    def __init__(self, players):
-        self.players = [f'PLAYER {i + 1}' for i in range(players)]
+    def __init__(self, players, chars=None):
+        self.chars = chars                 # a squad.Player per friend, when they play as characters
+        self.players = [c.name for c in chars] if chars else [f'PLAYER {i + 1}' for i in range(players)]
         self.colours = C.PARTY_COLOURS[:players]
         self.points = [0] * players
         self.round = 0                 # index of the player in goal
@@ -272,6 +299,19 @@ class KingOfTheGoal(Competition):
     def table(self):
         return sorted(zip(self.players, self.points, self.colours), key=lambda r: -r[1])
 
+    def player(self, slot):
+        if not self.chars or self.finished:
+            return None
+        return self.chars[self.order[self.turn]] if slot == 'p1' else None
+
+    def keeper_player(self, slot):
+        if not self.chars or self.finished:
+            return None
+        return self.chars[self.round] if slot == 'p2' else None
+
+    def taker_is_keeper(self, slot):
+        return False                     # friends take turns: nobody is "the keeper stepping up"
+
     def rows(self):
         return []
 
@@ -282,8 +322,9 @@ class KingOfTheGoal(Competition):
 class Knockout(Competition):
     """Party mode: a bracket of quick shootouts between friends."""
 
-    def __init__(self, players, kicks=3):
-        self.players = [f'PLAYER {i + 1}' for i in range(players)]
+    def __init__(self, players, kicks=3, chars=None):
+        self.chars = chars
+        self.players = [c.name for c in chars] if chars else [f'PLAYER {i + 1}' for i in range(players)]
         self.colours = C.PARTY_COLOURS[:players]
         self.kicks = kicks
         self.queue = list(range(players))   # still to play this round
@@ -334,6 +375,17 @@ class Knockout(Competition):
     def stakes(self, slot):
         return self.tie.stakes(slot) if self.tie else None
 
+    def player(self, slot):
+        if not self.chars or not self.tie:
+            return None
+        return self.chars[self.pair[0 if slot == 'p1' else 1]]
+
+    def keeper_player(self, slot):
+        return self.player(slot)
+
+    def taker_is_keeper(self, slot):
+        return False
+
     def in_sudden_death(self):
         return bool(self.tie) and self.tie.in_sudden_death()
 
@@ -383,8 +435,9 @@ class TournamentComp(ShootoutComp):
     """A World Cup style knockout of eight teams, every tie decided on
     penalties. You are the first team; the other ties are simulated."""
 
-    def __init__(self, teams, rng, kicks=5, order='abab'):
+    def __init__(self, teams, rng, kicks=5, order='abab', icons=None):
         self.rng = rng
+        self.icons = icons          # dict(takers=[keys], keeper=key, stats=...) for character squads
         self.teams = [dict(t) for t in teams[:8]]
         self.alive = list(range(len(self.teams)))
         self.round = 0
@@ -406,9 +459,16 @@ class TournamentComp(ShootoutComp):
                 'p2': dict(shirt=opp['shirt'], shorts=opp['shorts'], keeper=opp['keeper'])}
         if kits['p1']['shirt'] == kits['p2']['shirt']:
             kits['p2'] = dict(kits['p2'], shirt=(0.95, 0.95, 0.95))
+        squads, fixed = None, ()
+        if self.icons:
+            ic = self.icons
+            mine = CH.squad_from(ic.get('takers', []), ic.get('keeper'), self.rng, stats=ic.get('stats'))
+            theirs = CH.squad_from([], None, self.rng, exclude={p.char for p in mine}, stats=ic.get('stats'))
+            squads = {'p1': mine, 'p2': theirs}
+            fixed = ('p1',) if ic.get('takers') else ()
         ShootoutComp.__init__(self, {'p1': me['name'], 'p2': opp['name']}, kits, {'p1': 'human', 'p2': 'ai'},
                               first=self.rng.choice(('p1', 'p2')), kicks=self.kicks_n, order=self.order_kind,
-                              rng=self.rng, strength=(0.55, 0.5 + 0.05 * self.round))
+                              rng=self.rng, strength=(0.55, 0.5 + 0.05 * self.round), squads=squads, fixed=fixed)
 
     @property
     def level(self):
@@ -486,6 +546,13 @@ CAREER_TRAITS = {
 }
 CAREER_XP = [30, 60, 100, 150, 210]
 GOLD_XP = 100
+# Each trait unlocked also unlocks something to wear or do
+CAREER_COSMETICS = [('boots', 'Gold boots'), ('armband', "Captain's armband"), ('celebration', 'A signature celebration'),
+                    ('hair', 'A new hairstyle'), ('aura', 'An aura')]
+RIVAL_EVERY = 3          # every third fixture is against your rival
+STORY = {3: ('CALL-UP', 'The national team manager is in the stand. Score this and you are in the squad.'),
+         7: ('CUP FINAL', 'The cup final. Ninety minutes, one-all, and the referee points to the spot.'),
+         12: ('THE BIG ONE', 'A World Cup knockout tie. The whole country has stopped to watch.')}
 
 
 def career_defaults(role):
@@ -494,9 +561,10 @@ def career_defaults(role):
 
 class CareerComp(MatchPenaltyComp):
     """One fixture in a career: a single penalty, against stronger opponents
-    as you climb. Success earns XP; XP unlocks traits and a gold kit."""
+    as you climb. Success earns XP; XP unlocks traits, things to wear and a
+    gold kit. Every third fixture is against the same rival, who remembers."""
 
-    def __init__(self, career):
+    def __init__(self, career, avatar=None, rival=None):
         super().__init__(career['role'])
         self.career = career
         if career.get('gold'):
@@ -504,6 +572,67 @@ class CareerComp(MatchPenaltyComp):
             self.kits = dict(self.kits)
             self.kits[mine] = dict(self.kits[mine], shirt=C.CAREER_GOLD_KIT)
         self.names = {'p1': 'YOU', 'p2': 'RIVALS'} if career['role'] == 'kick' else {'p1': 'RIVALS', 'p2': 'YOU'}
+        self.rival_game = rival is not None and career['games'] % RIVAL_EVERY == RIVAL_EVERY - 1
+        self.rival = rival if self.rival_game else None
+        if self.rival:
+            other_slot = 'p2' if career['role'] == 'kick' else 'p1'
+            self.names[other_slot] = self.rival.name[:12]
+        self.avatar = self._dress(avatar)
+
+    def cosmetics(self):
+        return [k for k, _ in CAREER_COSMETICS[:len(self.career['traits'])]]
+
+    def _dress(self, avatar):
+        """Your figure: a picked character or a plain player, plus what you have unlocked."""
+        got = self.cosmetics()
+        if avatar is None:
+            if not got:
+                return None
+            avatar = S.Player(9, 'YOU', 0.5, 0.5, 0.5, keeper=self.career['role'] == 'keep')
+            avatar.look = CH.look(1, 'short', 'brown')
+        avatar.look = dict(avatar.look)
+        if 'boots' in got:
+            avatar.look['boots'] = 'gold'
+        if 'armband' in got:
+            avatar.look['armband'] = True
+        if 'celebration' in got and not avatar.celebration:
+            avatar.celebration = 'arms wide' if self.career['role'] == 'kick' else 'star'
+        if 'hair' in got:
+            avatar.look['hair'] = 'mohawk' if not avatar.char else avatar.look.get('hair', 'short')
+            avatar.look['hc'] = 'bleach'
+        if 'aura' in got:
+            avatar.aura = max(avatar.aura, 0.6)
+            avatar.glow = avatar.glow or (1.0, 0.82, 0.3)
+        return avatar
+
+    def mine(self):
+        return 'p1' if self.career['role'] == 'kick' else 'p2'
+
+    def player(self, slot):
+        # The rival taker (when you keep) really takes the kick; your avatar is only for show
+        return self.rival if self.rival and slot != self.mine() and self.career['role'] == 'keep' else None
+
+    def keeper_player(self, slot):
+        return self.rival if self.rival and slot != self.mine() and self.career['role'] == 'kick' else None
+
+    def figure(self, slot, keeping):
+        if slot == self.mine():
+            return self.avatar
+        return self.rival
+
+    def story(self):
+        """A story beat for this fixture, or None: (title, text)."""
+        c = self.career
+        if c['games'] in STORY:
+            return STORY[c['games']]
+        if c.get('last') is False:
+            return ('REDEMPTION', 'Last time it went wrong. Everyone remembers. Put it right.')
+        if self.rival:
+            log = c.get('rival_log') or []
+            if log:
+                return ('THE RIVAL', f'{self.rival.full} again. ' + rival_memory(log[-1], c['role']))
+            return ('THE RIVAL', f'{self.rival.full}. Remember the name: you will see a lot of each other.')
+        return None
 
     @property
     def level(self):
@@ -513,12 +642,18 @@ class CareerComp(MatchPenaltyComp):
         return sum(1 for name, k in CAREER_TRAITS[self.career['role']] if name in self.career['traits']
                    and k == kind)
 
-    def finish(self):
-        """Add XP after the fixture. Returns the list of things unlocked."""
+    def finish(self, direction=None):
+        """Add XP after the fixture. Returns the list of things unlocked.
+        direction: where your kick went (or your dive), for the rival to remember."""
         c = self.career
         success = self.result if c['role'] == 'kick' else not self.result
+        if self.rival:
+            log = c.setdefault('rival_log', [])
+            log.append(dict(dir=direction, won=bool(success), game=c['games']))
+            del log[:-5]
         c['games'] += 1
         c['wins'] += int(success)
+        c['last'] = bool(success)
         before = c['xp']
         c['xp'] += 15 if success else 4
         unlocked = []
@@ -527,6 +662,8 @@ class CareerComp(MatchPenaltyComp):
                 name = CAREER_TRAITS[c['role']][i][0]
                 c['traits'].append(name)
                 unlocked.append(f'Trait: {name}')
+                if i < len(CAREER_COSMETICS):
+                    unlocked.append(CAREER_COSMETICS[i][1])
         if before < GOLD_XP <= c['xp']:
             c['gold'] = True
             unlocked.append('Gold kit')
@@ -535,6 +672,21 @@ class CareerComp(MatchPenaltyComp):
     def summary_line(self):
         c = self.career
         return f"Career: {c['wins']}/{c['games']} won, {c['xp']} XP  |  Traits: {', '.join(c['traits']) or 'none yet'}"
+
+
+SIDE_WORDS = {-1: 'left', 0: 'down the middle', 1: 'right', None: 'nowhere'}
+
+
+def rival_memory(entry, role):
+    """The rival's line about last time: 'You went left on me...'."""
+    where = SIDE_WORDS.get(entry.get('dir'), 'left')
+    if role == 'kick':
+        if entry.get('won'):
+            return f'Last time you went {where} and scored. That has not been forgotten.'
+        return f'Last time you went {where} and it was saved. Expect the same dive.'
+    if entry.get('won'):
+        return f'Last time you dived {where} and saved it. The rival wants revenge.'
+    return f'Last time you dived {where} and got it wrong. The rival is smiling.'
 
 
 CHALLENGES = {

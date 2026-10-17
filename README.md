@@ -55,7 +55,20 @@ A 3D penalty shootout written in Python with PyOpenGL and GLUT. Play against the
 - **Achievements**: sixteen of them, from a Panenka to a fingertip save (`L` in the menu).
 - **Photo mode**: `Y` freezes the moment; orbit the camera and save a PNG without the HUD.
 - **Auto difficulty**: adjusts after every kick so you score about three in four.
-- **Mods**: drop JSON files in `~/.penalty_shootout/mods` to add famous shootouts or teams (see below).
+- **Mods**: drop JSON files in `~/.penalty_shootout/mods` to add famous shootouts, teams or characters (see below).
+
+## Characters
+
+Set **Characters** in the menu to *Club* (generated squads), *Legends* (drafted from the roster) or *Pick* (choose your own on the select screen). There are 90 of them: all-time legends, cult icons and meme heroes, current men's and women's stars, keepers, and a fantasy set with auras to match. Real names are used for fun only and all live in `shootout/characters.py`, so they are easy to rename.
+
+- **Looks, names and numbers.** Skin, hair, beards, headbands, boots, gloves and build, with the name and number on the back of the shirt. Faces change with the moment (focused, nervous, grinning, gutted), and the camera closes in during the ritual.
+- **Personalities.** Takers are Ice Cold (antics bounce off), Showboat, Hothead (takes the bait), Thinker (always takes the ritual), the Kid (fifth kick nerves), Clutch (better when it matters) or Steady. Keepers are Dancers, Walls, Gamblers, Readers (remember your last kick), Showmen, Sweepers or Cats (better fingertips).
+- **Signatures and rituals.** Hop, stop-start, Panenka, rocket, curl, low and knuckle shots become the default; keepers can have perfect notes or extra reach. Each has a mannerism (badge kiss, wiping the boots, swinging on the bar) and a celebration, from the knee slide and the aeroplane to the famous meme poses. Aura glows round the big names, rattles the other side and steadies their own.
+- **Select and create.** `A`/`D` browse, `W`/`S` change the filter (legends, cult icons, current, women, keepers, fantasy, yours and mods), `Enter` picks, `X` undoes, `R` fills the rest at random. `C` (in the menu or on the select screen) opens create-a-player: pick the look, personality, signature and celebration, and share a rating budget between composure, power and placement. Created players are saved to `~/.penalty_shootout/players.json`.
+- **Unlockable legends.** Some characters wait for an achievement (a Top Bins round, a keeper's goal, a fingertip save, a sudden-death win, three saves, a tournament...).
+- **Career.** Pick an avatar; every third fixture is against the same rival, who remembers which way you went last time. Story cards mark the big moments, and traits unlock gold boots, the armband, a celebration, new hair and an aura.
+- **Referees, managers and teammates.** Each match gets a referee with their own tolerance for antics, time-wasting and taunts, shown at the toss. Managers watch from the touchline, the captain has a word before big kicks, and the line on halfway is the real bench.
+- **Commentary and form.** Lines for each character, personality and celebration, keeper banter that remembers earlier kicks, and form that rises with scored fifth kicks and dips with misses, fading over a few games.
 
 ## How to Run
 
@@ -84,7 +97,7 @@ To face a friend's ghost duel: `python penalty_shootout.py --duel duel-....json`
 
 ## Controls
 
-**Menu**: `W`/`S` move, `A`/`D` change, `Enter`/`Space` kick off, `K` rebind keys, `L` achievements. The mouse works too.
+**Menu**: `W`/`S` move, `A`/`D` change, `Enter`/`Space` kick off, `C` create a player, `K` rebind keys, `L` achievements. The mouse works too.
 
 **Match** (default keys; rebind them from the menu)
 
@@ -125,6 +138,12 @@ Put JSON files in `~/.penalty_shootout/mods/`. Each can hold a list of `scenario
 {"teams": [{"name": "Rovers", "shirt": [0.1, 0.5, 0.3], "shorts": [1, 1, 1], "keeper": [0.9, 0.8, 0.1]}]}
 ```
 
+A list of `players` adds characters to the select screen under *Yours and mods*: `name` and `composure`, `power` and `placement` (0 to 1) are required; `role` (`kick` or `keep`), `number`, `foot`, `women`, `persona`, `signature`, `celebration`, `aura`, `tag`, `lines` and a `look` (`skin`, `hair`, `hc`, `beard`, `h`, `w`, `boots`) are optional. See `valid_character` in `shootout/characters.py` for the allowed values.
+
+```json
+{"players": [{"name": "Legend", "composure": 0.9, "power": 0.8, "placement": 0.85, "persona": "ice", "celebration": "siuu"}]}
+```
+
 ## Difficulty (PvC)
 
 | | Easy | Medium | Hard |
@@ -150,6 +169,7 @@ Put JSON files in `~/.penalty_shootout/mods/`. Each can hold a list of `scenario
 │   ├── game.py             # Match flow and input (no OpenGL)
 │   ├── modes.py            # Shootout, training, 90th-minute pen, party, tournament, career, challenges...
 │   ├── squad.py            # Takers' ratings, the order, fresh subs, water-bottle notes
+│   ├── characters.py       # The character roster, looks, personalities, created players
 │   ├── winprob.py          # Exact win probability from the score
 │   ├── commentary.py       # Commentary lines, captioned or spoken
 │   ├── report.py           # The coach's report after a match
