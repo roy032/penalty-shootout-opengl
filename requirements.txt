@@ -3,5 +3,7 @@ PyOpenGL>=3.1
 pygame>=2.1
 # GIF export of replays (optional: frames are saved as images without it)
 Pillow>=9.0
+# Spoken commentary (optional: captions only without it)
+# pyttsx3>=2.90
 # Optional speedups:
 # PyOpenGL_accelerate>=3.1

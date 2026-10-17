@@ -6,19 +6,20 @@ import os
 
 PATH = os.path.join(os.path.expanduser('~'), '.penalty_shootout_keys.json')
 
-ACTIONS = ['left', 'right', 'up', 'down', 'shoot', 'special', 'extra1', 'extra2']
+ACTIONS = ['left', 'right', 'up', 'down', 'shoot', 'special', 'extra1', 'extra2', 'extra3']
 ACTION_LABELS = {
     'left': 'Aim / dive left', 'right': 'Aim / dive right', 'up': 'Aim up / high-low',
     'down': 'Aim down / stay', 'shoot': 'Shoot / set power', 'special': 'Shot type / wave arms',
-    'extra1': 'Disguise run-up / shuffle', 'extra2': 'Celebrate / fake lean',
+    'extra1': 'Run-up style / shuffle', 'extra2': 'Gaze, celebrate / fake lean, take the ball',
+    'extra3': 'Keeper: point to a corner',
 }
 DEFAULTS = {
-    'p1': dict(left='a', right='d', up='w', down='s', shoot=' ', special='e', extra1='q', extra2='x'),
-    'p2': dict(left='j', right='l', up='i', down='k', shoot='\r', special='o', extra1='u', extra2='m'),
+    'p1': dict(left='a', right='d', up='w', down='s', shoot=' ', special='e', extra1='q', extra2='x', extra3='z'),
+    'p2': dict(left='j', right='l', up='i', down='k', shoot='\r', special='o', extra1='u', extra2='m', extra3=','),
 }
 # Keys the game itself uses: Esc quit, pause, help, camera, sound, restart,
-# replay, clip export, keep replay, trajectory preview
-RESERVED = {'\x1b', 'p', 'h', 'c', 'n', 'r', 'v', 'g', 'f', 't'}
+# replay, clip export, keep replay, trajectory preview, photo mode, coach report
+RESERVED = {'\x1b', 'p', 'h', 'c', 'n', 'r', 'v', 'g', 'f', 't', 'y', '\t'}
 
 CONTROLS = {slot: dict(keys) for slot, keys in DEFAULTS.items()}
 

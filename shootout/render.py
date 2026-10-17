@@ -35,7 +35,7 @@ END_ROWS = 12
 SEGMENTS = 24
 
 _quadric = None
-_static = {}          # daytime -> display list
+_static = {}          # (daytime, variant) -> display list
 _end = {}             # end colour -> [(down list, up list), ...]
 _particles = None
 _torches = None
@@ -187,6 +187,12 @@ def _pitch():
         z += stripe
         i += 1
     glEnd()
+    if C.VARIANT == 'park':
+        _park_ground()
+        return
+    if C.VARIANT in ('futsal', 'beach'):
+        _court(C.VARIANT)
+        return
     glColor3f(0.95, 0.95, 0.95)
     w = 0.12
     line = C.GOAL_LINE_Z
@@ -208,6 +214,49 @@ def _pitch():
     # Touchlines at the edge of view
     _line_strip_quads([(-34.0, line), (-34.0, 40.0)], w)
     _line_strip_quads([(34.0, line), (34.0, 40.0)], w)
+
+
+def _park_ground():
+    """Jumpers for goalposts: no lines, a worn patch in the goalmouth and on the spot."""
+    glColor3f(0.42, 0.36, 0.22)
+    disc(0.0, C.GOAL_LINE_Z + 0.6, 1.6, 0.012, 28)
+    disc(0.0, C.SPOT_Z, 0.5, 0.013, 20)
+    glColor3f(0.3, 0.25, 0.16)
+    disc(0.0, C.SPOT_Z, 0.14, 0.014)
+
+
+def _court(kind):
+    """Futsal: a painted indoor court. Beach: raked sand with rope lines."""
+    if kind == 'futsal':
+        glColor3f(0.12, 0.32, 0.6)
+        glBegin(GL_QUADS)
+        flat_quad(-20.0, C.GOAL_LINE_Z - 8.0, 20.0, 30.0, 0.008)
+        glEnd()
+        glColor3f(0.85, 0.45, 0.15)
+        glBegin(GL_QUADS)
+        flat_quad(-10.0, C.GOAL_LINE_Z, 10.0, C.GOAL_LINE_Z + 6.0, 0.009)
+        glEnd()
+        line_col = (0.95, 0.95, 0.95)
+    else:
+        rng = random.Random(3)
+        glBegin(GL_QUADS)
+        for k in range(40):
+            z = C.GOAL_LINE_Z - 8.0 + k * 1.0
+            shade = 0.03 * rng.random()
+            glColor3f(0.87 - shade, 0.77 - shade, 0.55 - shade)
+            flat_quad(-24.0, z, 24.0, z + 1.0, 0.008)
+        glEnd()
+        line_col = (0.1, 0.25, 0.7)
+    glColor3f(*line_col)
+    line = C.GOAL_LINE_Z
+    _line_strip_quads([(-18.0, line), (18.0, line)], 0.1, 0.013)
+    # The area is a quarter-circle each side of the goal in futsal
+    pts = []
+    for k in range(33):
+        a = math.pi * k / 32
+        pts.append((-math.cos(a) * 6.0, line + math.sin(a) * 6.0))
+    _line_strip_quads(pts, 0.1, 0.013)
+    disc(0.0, C.SPOT_Z, 0.12, 0.015)
 
 
 def _ad_boards():
@@ -331,9 +380,10 @@ def _compile(build, *args):
 
 
 def draw_static(daytime='night'):
-    if daytime not in _static:
-        _static[daytime] = _compile(_build_static, daytime)
-    glCallList(_static[daytime])
+    key = (daytime, C.VARIANT)
+    if key not in _static:
+        _static[key] = _compile(_build_static, daytime)
+    glCallList(_static[key])
 
 
 def _end_lists(colour):
@@ -500,7 +550,30 @@ def draw_ground_cover(weather):
 
 
 # ------------------------------------------------------------------------ goal
+def draw_jumpers():
+    """Two piles of clothes for posts, and a bag for good measure."""
+    for s, col in ((-1, (0.75, 0.1, 0.12)), (1, (0.15, 0.3, 0.75))):
+        x = s * (C.GOAL_HALF_WIDTH + 0.15)
+        glColor3f(*col)
+        glPushMatrix()
+        glTranslatef(x, 0.08, C.GOAL_LINE_Z)
+        glRotatef(25 * s, 0, 1, 0)
+        box(0.5, 0.16, 0.4)
+        glColor3f(0.2, 0.2, 0.22)
+        glTranslatef(0.05, 0.12, 0.02)
+        box(0.38, 0.1, 0.3)
+        glPopMatrix()
+    glColor3f(0.1, 0.1, 0.1)
+    glPushMatrix()
+    glTranslatef(C.GOAL_HALF_WIDTH + 1.4, 0.15, C.GOAL_LINE_Z - 0.8)
+    box(0.55, 0.3, 0.3)
+    glPopMatrix()
+
+
 def draw_goal(net_hit, clock):
+    if not C.HAS_BAR:
+        draw_jumpers()
+        return
     hw = C.GOAL_HALF_WIDTH + C.POST_RADIUS
     h = C.GOAL_HEIGHT + C.POST_RADIUS
     z = C.GOAL_LINE_Z - C.POST_RADIUS
@@ -510,6 +583,8 @@ def draw_goal(net_hit, clock):
     cylinder_between((-hw, 0, z), (-hw, h + pr, z), pr)
     cylinder_between((hw, 0, z), (hw, h + pr, z), pr)
     cylinder_between((-hw - pr, h, z), (hw + pr, h, z), pr)
+    if not C.HAS_NET:
+        return
     # Net supports
     glColor3f(0.6, 0.6, 0.62)
     for s in (-1, 1):
@@ -602,7 +677,7 @@ def draw_shadow(x, z, r, strength=0.35, height=1.8):
 
 
 def _figure(x, z, yaw, kit, arms=(12.0, 12.0, 0.0, 0.0), legs=(0.0, 0.0), jump=0.0, hips=0.0,
-            pitch=0.0, height=0.0, face=SKIN):
+            pitch=0.0, height=0.0, face=SKIN, head=0.0, bend=0.0):
     """A standing outfield figure. arms: right and left spread about z, right
     and left swing about x."""
     glPushMatrix()
@@ -617,6 +692,10 @@ def _figure(x, z, yaw, kit, arms=(12.0, 12.0, 0.0, 0.0), legs=(0.0, 0.0), jump=0
     box(0.42, 0.3, 0.24)
     glPopMatrix()
     glRotatef(hips, 0, 1, 0)            # the upper body opens up towards the target
+    if bend:
+        glTranslatef(0, 1.03, 0)        # bend at the waist (placing the ball)
+        glRotatef(-bend, 1, 0, 0)
+        glTranslatef(0, -1.03, 0)
     glColor3f(*kit['shirt'])
     glPushMatrix()
     glTranslatef(0, 1.3, 0)
@@ -625,7 +704,11 @@ def _figure(x, z, yaw, kit, arms=(12.0, 12.0, 0.0, 0.0), legs=(0.0, 0.0), jump=0
     glColor3f(*face)
     glPushMatrix()
     glTranslatef(0, 1.75, 0)
+    glRotatef(head, 0, 1, 0)            # where he is looking
     sphere(0.13)
+    glColor3f(0.12, 0.08, 0.05)         # hair, so the head turn reads
+    glTranslatef(0, 0.04, 0.06)
+    box(0.2, 0.12, 0.12)
     glPopMatrix()
     spread_r, spread_l, swing_r, swing_l = arms
     _limb((0.29, 1.55, 0), swing_r, spread_r, 0.62, 0.12, kit['shirt'], SKIN)
@@ -642,6 +725,8 @@ def draw_kicker(state, kit, clock):
     if kick:
         right = (70.0 if kick < 0 else 85.0) * kick
     legs = (right, swing)
+    if state.get('left_foot'):
+        legs = (swing, right)               # strikes with the left
     arms = (12.0, 12.0, swing * 0.8, -swing * 0.8)
     yaw, jump, pitch, height = state['yaw'], 0.0, 0.0, 0.0
     if mood == 'slip':
@@ -669,11 +754,14 @@ def draw_kicker(state, kit, clock):
     elif mood == 'despair':
         arms = (200.0, 200.0, 0.0, 0.0)             # hands on head
         pitch = 12.0
+    # Gaze: staring the keeper down, or eyes on the ball and away from him
+    head = {'away': 75.0, 'stare': 0.0}.get(state.get('gaze'), 0.0)
     draw_shadow(x, z, 0.45)
-    _figure(x, z, yaw, kit, arms, legs, jump, state.get('hips', 0.0), pitch, height)
+    _figure(x, z, yaw, kit, arms, legs, jump, state.get('hips', 0.0), pitch, height, head=head,
+            bend=55.0 * state.get('bend', 0.0))
 
 
-def draw_keeper(pose, colour, clock, mood=None, first_person=False):
+def draw_keeper(pose, colour, clock, mood=None, first_person=False, scale=1.0, point=0):
     (x, y, z), lean, arms = pose
     if mood == 'dance':
         # Back on his feet, swaying and wagging the arms at the crowd
@@ -687,6 +775,8 @@ def draw_keeper(pose, colour, clock, mood=None, first_person=False):
     glPushMatrix()
     glTranslatef(x, y, z)
     glRotatef(-lean, 0, 0, 1)
+    if scale != 1.0:
+        glScalef(scale, scale, scale)
     shorts = (0.1, 0.1, 0.12)
     glColor3f(*colour)
     glPushMatrix()
@@ -719,6 +809,9 @@ def draw_keeper(pose, colour, clock, mood=None, first_person=False):
     elif arms == 'wave':
         w = 25.0 * math.sin(clock * 14.0)
         r_arm, l_arm = 150.0 + w, -150.0 - w
+    elif arms == 'point':
+        # One arm out straight at a corner: 'I know where you are going'
+        r_arm, l_arm = (120.0, -40.0) if point > 0 else (40.0, -120.0)
     else:
         r_arm, l_arm = 55.0, -55.0
     _limb((0.28, 0.5, 0), 0, r_arm, 0.62, 0.12, colour, GLOVE)
@@ -765,7 +858,8 @@ def draw_officials(card, clock):
     _figure(ax, az, -90.0, AR_KIT, (12.0, 12.0, 20.0 * math.sin(clock * 0.8), 0.0))
 
 
-TEAMMATE_Z = C.SPOT_Z + 26.0     # the group arm in arm in the centre circle
+def teammate_z():
+    return C.GOAL_LINE_Z + 37.0      # the group arm in arm in the centre circle
 
 
 def draw_teammates(colours, team_mood, kicker, clock, kits):
@@ -789,7 +883,7 @@ def draw_teammates(colours, team_mood, kicker, clock, kits):
             elif happy is False:
                 pitch = 25.0                     # heads down
                 arms = (200.0, 200.0, 0.0, 0.0) if i % 2 else (12.0, 12.0, 0.0, 0.0)
-            _figure(x, TEAMMATE_Z, 180.0, kit, arms, jump=jump, pitch=pitch)
+            _figure(x, teammate_z(), 180.0, kit, arms, jump=jump, pitch=pitch)
 
 
 def draw_waiting_keeper(colour):
@@ -851,6 +945,22 @@ def draw_ball(pos, spin, orange=False):
     glPopMatrix()
 
 
+def draw_bins(bins, clock):
+    """Top Bins challenge: hoops hung in the top corners."""
+    glDisable(GL_LIGHTING)
+    glLineWidth(4.0)
+    from .modes import BIN_RADIUS
+    for i, (bx, by) in enumerate(bins):
+        glColor3f(1.0, 0.55 + 0.2 * math.sin(clock * 4.0 + i), 0.1)
+        glBegin(GL_LINE_LOOP)
+        for k in range(32):
+            a = 2 * math.pi * k / 32
+            glVertex3f(bx + BIN_RADIUS * math.cos(a), by + BIN_RADIUS * math.sin(a), C.GOAL_LINE_Z - 0.05)
+        glEnd()
+    glLineWidth(1.0)
+    glEnable(GL_LIGHTING)
+
+
 def draw_preview(preview):
     """Training: dotted path of the shot as aimed, and a ring for how far it may stray."""
     pts = preview['points']
@@ -885,7 +995,7 @@ def draw_preview(preview):
 
 ENV_DEFAULTS = dict(weather='clear', daytime='night', end_colour=(0.85, 0.12, 0.15), crowd='calm',
                     tension=False, flares=False, tifo=False, wind=0.0, preview=None,
-                    first_person=False, kits=None, officials=True)
+                    first_person=False, kits=None, officials=True, variant='stadium', bins=None)
 
 
 def draw_scene(view, aim=None, clock=0.0, env=None):
@@ -909,8 +1019,11 @@ def draw_scene(view, aim=None, clock=0.0, env=None):
     if env['officials']:
         card = view.get('card')
         draw_officials(card[0] if card else None, view['clock'])
-    draw_keeper(view['keeper'], view['keeper_colour'], view['clock'], view.get('keeper_mood'),
-                env['first_person'])
+    if not view.get('no_keeper'):
+        draw_keeper(view['keeper'], view['keeper_colour'], view['clock'], view.get('keeper_mood'),
+                    env['first_person'], view.get('keeper_scale', 1.0), view.get('keeper_point', 0))
+    if env['bins']:
+        draw_bins(env['bins'], view['clock'])
     draw_kicker(view['shooter'], view['kicker_kit'], view['clock'])
     draw_ball(view['ball'], view['spin'], orange=weather == 'snow')
     if env['preview']:

@@ -26,7 +26,7 @@ class ShotMemory:
         return (2.0 * right - len(vals)) / len(vals)
 
 
-def keeper_decision(rng, params, shot_target, kicker_history, cue=1.0, shuffle=0.0):
+def keeper_decision(rng, params, shot_target, kicker_history, cue=1.0, shuffle=0.0, pointed=0):
     """Choose a dive for the computer keeper at the moment of contact.
 
     cue: how clearly the kicker's run-up gave the side away (hips, plant
@@ -46,6 +46,9 @@ def keeper_decision(rng, params, shot_target, kicker_history, cue=1.0, shuffle=0
         return direction, high, delay
     if shuffle and rng.random() < 0.7:
         return (1 if shuffle < 0 else -1), rng.random() < 0.35, delay
+    if pointed and rng.random() < 0.6:
+        # Pointed one way to scare the kicker off it, then goes the other
+        return -pointed, rng.random() < 0.35, delay
     lean = ShotMemory._lean(kicker_history)
     p_right = 0.5 + 0.3 * lean
     direction = 1 if rng.random() < p_right else -1
@@ -58,13 +61,18 @@ def keeper_prekick(rng, params):
     shuffle = 0.0
     if rng.random() < params['bait']:
         shuffle = rng.choice((-0.35, 0.35))
+    point = 0
+    if rng.random() < params['bait'] * 0.5:
+        point = rng.choice((-1, 1))
     return dict(shuffle=shuffle, fake=rng.random() < params['bait'] * 0.6,
-                taunts=1 if rng.random() < params['bait'] else 0)
+                taunts=1 if rng.random() < params['bait'] else 0, point=point,
+                take_ball=rng.random() < params['bait'] * 0.4)
 
 
-def kicker_adjust(rng, plan, keeper_x0, fake_dir, wind, exploit):
+def kicker_adjust(rng, plan, keeper_x0, fake_dir, wind, exploit, point_dir=0, rattled=1.0):
     """Last look before the run-up: the bigger side tempts, a fake can fool,
-    and a good kicker allows for the wind."""
+    a pointing keeper plants doubt, and a good kicker allows for the wind.
+    rattled: how much the keeper's antics get to this kicker."""
     kind, (x, y) = plan['kind'], plan['aim']
     if kind != 'chip':
         side = 1 if x > 0 else -1
@@ -72,6 +80,8 @@ def kicker_adjust(rng, plan, keeper_x0, fake_dir, wind, exploit):
             side = 1 if keeper_x0 < 0 else -1          # the gap the keeper left
         if fake_dir and rng.random() < 0.4:
             side = -fake_dir                             # sold the dummy
+        if point_dir and rng.random() < 0.45 * rattled:
+            side = -point_dir                            # stays away from the pointed corner
         x = side * abs(x)
     flight = 11.0 / max(8.0, C.SHOT_TYPES[kind]['speed'][0])
     x -= 0.5 * wind * flight * flight * (0.4 + 0.5 * exploit)
@@ -100,23 +110,32 @@ def _pick(rng, weights):
     return k
 
 
-def kicker_plan(rng, params, profile, keeper_dives):
-    """Choose shot type, aim point and where to stop the power bar."""
+def kicker_plan(rng, params, profile, keeper_dives, player=None, shot_types=None):
+    """Choose shot type, aim point and where to stop the power bar. A squad
+    player's own habits (natural side, low or high) override the profile's."""
+    if player is not None:
+        natural = player.natural if player.foot == 'R' else 1.0 - player.natural   # left-footers mirror
+        profile = dict(profile, natural=natural, low=player.low)
+    if shot_types is not None:
+        profile = dict(profile, types={k: w for k, w in profile['types'].items() if k in shot_types} or
+                       {'placed': 1.0})
     kind = _pick(rng, profile['types'])
     power_mean, power_spread = params['power']
     power = min(1.0, max(0.25, rng.gauss(power_mean, power_spread)))
+    # Aim points are for a full-size goal; scale them to the pitch variant
+    sx, sy = C.GOAL_HALF_WIDTH / 3.66, C.GOAL_HEIGHT / 2.44
     if kind == 'chip':
-        return kind, (rng.uniform(-0.4, 0.4), rng.uniform(1.2, 1.7)), min(power, 0.7)
+        return kind, (rng.uniform(-0.4, 0.4) * sx, rng.uniform(1.2, 1.7) * sy), min(power, 0.7)
     if kind == 'stutter':
         power = min(power, 0.75)
     # Natural side, then shade away from the keeper's favourite dive
     p_left = profile['natural']
     p_left = p_left + params['exploit'] * 0.35 * ShotMemory._lean(keeper_dives)
     side = -1 if rng.random() < min(0.9, max(0.1, p_left)) else 1
-    x = side * rng.uniform(2.3, 3.25)
+    x = side * rng.uniform(2.3, 3.25) * sx
     if rng.random() < profile['low']:
         y = rng.uniform(0.2, 0.6)
     else:
-        y = rng.uniform(1.5, 2.15)
+        y = rng.uniform(1.5, 2.15) * sy
     return kind, (x, y), power
 

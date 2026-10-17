@@ -16,9 +16,10 @@ class Shootout:
     equal number of kicks.
     """
 
-    def __init__(self, first='p1', kicks_per_side=5):
+    def __init__(self, first='p1', kicks_per_side=5, order='abab'):
         self.first = first
         self.kicks_per_side = kicks_per_side
+        self.order = order          # 'abab', or the 'abba' order trialled in 2017-18
         self.results = {'p1': [], 'p2': []}
         self.winner = None
 
@@ -29,8 +30,11 @@ class Shootout:
         return len(self.results[side])
 
     def next_kicker(self):
-        a, b = self.kicks(self.first), self.kicks(other(self.first))
-        return self.first if a == b else other(self.first)
+        total = self.kicks('p1') + self.kicks('p2')
+        lead = self.first
+        if self.order == 'abba' and (total // 2) % 2 == 1:
+            lead = other(self.first)          # A B, B A, A B, ...
+        return lead if total % 2 == 0 else other(lead)
 
     def in_sudden_death(self):
         n = self.kicks_per_side
@@ -55,7 +59,7 @@ class Shootout:
             if gb > ga + (n - na):
                 return 'p2'
             return None
-        if na == nb and ga != gb:
+        if na == nb and ga != gb and na > n:
             return 'p1' if ga > gb else 'p2'
         return None
 
@@ -64,7 +68,7 @@ class Shootout:
         if self.winner is not None:
             return None
         for scored, label in ((True, 'to_win'), (False, 'must_score')):
-            trial = Shootout(self.first, self.kicks_per_side)
+            trial = Shootout(self.first, self.kicks_per_side, self.order)
             trial.results = {s: list(r) for s, r in self.results.items()}
             result = trial.record(side, scored)
             if scored and result == side:

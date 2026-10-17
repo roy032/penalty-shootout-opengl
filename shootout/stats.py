@@ -6,6 +6,10 @@ import os
 PATH = os.path.join(os.path.expanduser('~'), '.penalty_shootout_stats.json')
 FIELDS = ('matches', 'wins', 'kicks', 'goals', 'faced', 'saves')
 # Goal mouth split into 3 columns x 2 rows for the training heatmap
+# Other saved records: achievements, adaptive difficulty level, career,
+# challenge bests, daily results, and each shirt number's record from the spot
+EXTRA = {'achievements': list, 'auto_level': float, 'career': dict, 'challenges': dict, 'daily': dict,
+         'takers': dict, 'tutorial_done': bool}
 ZONES = ['left high', 'centre high', 'right high', 'left low', 'centre low', 'right low']
 
 
@@ -17,6 +21,9 @@ def zone_of(x, y):
 def load(path=PATH):
     data = dict.fromkeys(FIELDS, 0)
     data['zones'] = {z: [0, 0] for z in ZONES}    # attempts, goals
+    for k, kind in EXTRA.items():
+        data[k] = kind()
+    data['auto_level'] = 0.5
     try:
         with open(path) as f:
             saved = json.load(f)
@@ -26,6 +33,10 @@ def load(path=PATH):
         for z, v in (saved.get('zones') or {}).items():
             if z in data['zones'] and isinstance(v, list) and len(v) == 2:
                 data['zones'][z] = [int(v[0]), int(v[1])]
+        for k, kind in EXTRA.items():
+            if isinstance(saved.get(k), kind) and not isinstance(saved.get(k), bool) or (
+                    kind is bool and isinstance(saved.get(k), bool)):
+                data[k] = saved[k]
     except (OSError, ValueError, TypeError):
         pass
     return data

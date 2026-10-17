@@ -14,3 +14,7 @@ desktop.ini
 
 # Tests
 .pytest_cache/
+
+# Builds
+build/
+dist/

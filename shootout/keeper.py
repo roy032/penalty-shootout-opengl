@@ -35,6 +35,10 @@ class Keeper:
         self.dove_early = False  # left the line before the ball was kicked
         self.y_end = None        # where the dive finishes: height of the body ...
         self.lean_end = None     # ... and how flat it is
+        self.point_dir = 0       # pointing to a corner before the kick
+        self.stretch = None      # 'good' or 'early' once the fingertip stretch is pressed
+        self.parry_mode = None   # 'wide' or 'front': where a human pushes a parry
+        self.parry_side = 0
 
     # --- control ---
     def commit(self, direction, high, delay=0.0):
@@ -57,6 +61,23 @@ class Keeper:
         if self.t is None:
             self.fake_t = 0.0
             self.fake_dir = direction or 1
+
+    def point(self, direction):
+        """Point to a corner: 'I know where you are going'."""
+        if self.t is None:
+            self.point_dir = direction
+
+    def press_stretch(self, time_to_ball):
+        """Second press during the dive. Timed as the ball arrives, the
+        fingertips find an extra few centimetres; too early and he is fully
+        stretched with nothing left, so the ball can go under him."""
+        if self.t is None or self.stretch is not None or not self.dir:
+            return None
+        self.stretch = 'good' if 0.0 <= time_to_ball <= C.FINGERTIP_WINDOW else 'early'
+        return self.stretch
+
+    def bonus(self):
+        return C.FINGERTIP_BONUS if self.stretch == 'good' else 0.0
 
     def shuffle(self, offset):
         """Step along the line (allowed by Law 14) to make one side look bigger."""
@@ -105,7 +126,7 @@ class Keeper:
         if self.t is None:
             sway = 0.06 * math.sin(self.clock * 3.2)
             bounce = 0.03 * abs(math.sin(self.clock * 6.4))
-            arms = 'wave' if self.wave > 0 else 'ready'
+            arms = 'wave' if self.wave > 0 else ('point' if self.point_dir else 'ready')
             lean = 0.0
             if self.fake_t is not None:
                 lean = self.fake_dir * 16.0 * math.sin(math.pi * self.fake_t / 0.45)
@@ -138,15 +159,16 @@ class Keeper:
 
         caps = []
         if arms == 'dive':
-            caps.append((along(-0.95), along(1.4), 0.2))      # feet to fingertips
+            caps.append((along(-0.95), along(1.4 + self.bonus()), 0.2))      # feet to fingertips
             caps.append((along(-0.3), along(0.6), 0.26))      # torso
             # The lower arm sweeps below the body line: along the grass on a
             # low dive, across the middle of the goal on a high one
             extra = math.radians((30.0 if not self.high else 40.0) * (1 if lean >= 0 else -1))
             a = along(0.45)
             u2 = (math.sin(rad + extra), math.cos(rad + extra))
-            caps.append((a, [a[0] + u2[0] * 0.95, a[1] + u2[1] * 0.95, z], 0.12))
-            if not self.high:
+            if self.stretch != 'early':           # over-stretched: no arm left to cover underneath
+                caps.append((a, [a[0] + u2[0] * 0.95, a[1] + u2[1] * 0.95, z], 0.12))
+            if not self.high and self.stretch != 'early':
                 # Trailing leg: the push-off leg stays low and can block with the foot
                 p = min(1.0, (self.t or 0.0) / self.dive_time)
                 foot = [self.x0 + self.dir * (0.3 + 0.9 * _ease_out(p)), 0.1, z]
@@ -199,6 +221,16 @@ class Keeper:
                 for k in range(3):
                     ball.vel[k] -= 1.3 * vn * n[k]
                     ball.vel[k] *= 0.7
+            if self.parry_mode == 'wide':
+                # Pushed round the post, away from danger
+                side = self.parry_side or (1 if ball.pos[0] >= self.x0 else -1)
+                ball.vel[0] = side * max(abs(ball.vel[0]), 5.0)
+                ball.vel[2] = min(ball.vel[2], -2.0)
+            elif self.parry_mode == 'front':
+                # Palmed down into the six-yard box: easier to smother, but live
+                ball.vel[0] *= 0.3
+                ball.vel[1] = min(ball.vel[1], 1.0)
+                ball.vel[2] = abs(ball.vel[2]) * 0.4 + 1.5
             ball.side_accel = 0.0
             self.touch_cooldown = 0.12
             return 'parry'

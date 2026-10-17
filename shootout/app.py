@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -11,7 +12,7 @@ from OpenGL.GL import *  # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
 from OpenGL.GLUT import *  # noqa: F401,F403
 
-from . import config as C, controls, hud, render
+from . import config as C, controls, hud, render, scenarios
 from .audio import Audio
 from .game import WALK_TIME, Game
 from .gamepad import Gamepads
@@ -25,11 +26,19 @@ pads = None
 phone = None
 _last_ms = None
 _clip = None              # frames being captured for a GIF
+net = None                # LAN session, when hosting or joining
 
 
 def camera_eye(g, view):
     """Eye and look-at point for the current camera."""
     bx, by, bz = view['ball']
+    if g.photo:
+        # Photo mode: orbit the frozen moment, centred between ball and keeper
+        ang, height, dist = g.photo_cam
+        (kx, ky, kz), _, _ = view['keeper']
+        cx, cz = (bx + kx) / 2.0, (bz + kz) / 2.0 if abs(bz - kz) < 8.0 else bz
+        a = math.radians(ang)
+        return (cx + dist * math.sin(a), height, cz + dist * math.cos(a)), (cx, max(0.4, by * 0.6 + 0.4), cz)
     if g.phase == 'replay':
         cam = g.replay_cam
         if cam == 'ball':
@@ -39,10 +48,10 @@ def camera_eye(g, view):
             return (9.0, 1.6, C.GOAL_LINE_Z + 2.5), (0.0, 1.0, C.GOAL_LINE_Z + 0.5)
         # Reverse angle from behind the net, the classic replay shot
         return (4.5, 2.3, C.GOAL_LINE_Z - 6.5), (0.0, 1.0, C.GOAL_LINE_Z + 4.0)
-    if g.phase == 'walk' and g.camera == 'broadcast':
+    if g.phase in ('walk', 'ritual') and g.camera == 'broadcast':
         # Tracking shot behind the kicker on the long walk
         sx, sz = view['shooter']['pos']
-        r = min(1.0, g.phase_t / WALK_TIME)
+        r = min(1.0, g.phase_t / WALK_TIME) if g.phase == 'walk' else 1.0
         return (sx - 1.0, 2.2 - 0.3 * r, sz + 4.5), (sx * 0.3, 1.2, C.GOAL_LINE_Z)
     cam = g.camera
     if cam == 'keeper' and not g.is_human(g.keeper_side()):
@@ -96,9 +105,67 @@ def display():
     setup_camera(g, view)
     aim = tuple(g.aim) if g.aim_visible() else None
     render.draw_scene(view, aim, g.clock, env)
+    if g.photo_request:
+        g.photo_request = False
+        g.toast = (save_photo(), g.clock)
     hud.draw(g)
     _capture_frame(g)
     glutSwapBuffers()
+    if g.clipboard_request:
+        if not copy_to_clipboard(g.clipboard_request):
+            g.toast = ('No clipboard tool found: the grid is in ' + os.path.basename(_daily_file()), g.clock)
+        g.clipboard_request = None
+
+
+def _daily_file():
+    from .game import DAILY_FILE
+    return DAILY_FILE
+
+
+def copy_to_clipboard(s):
+    """Put text on the system clipboard with whatever tool the OS has."""
+    if sys.platform.startswith('win'):
+        cmds = [['clip']]
+    elif sys.platform == 'darwin':
+        cmds = [['pbcopy']]
+    else:
+        cmds = [['wl-copy'], ['xclip', '-selection', 'clipboard'], ['xsel', '--clipboard', '--input']]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, input=s.encode('utf-16' if cmd == ['clip'] else 'utf-8'), check=True, timeout=3)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
+def _grab():
+    w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    glPixelStorei(GL_PACK_ALIGNMENT, 1)
+    return w, h, bytes(glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE))
+
+
+def save_photo(directory=None):
+    """Photo mode: save the frame as drawn, without the HUD."""
+    directory = directory or CLIP_DIR
+    w, h, data = _grab()
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    try:
+        os.makedirs(directory, exist_ok=True)
+        try:
+            from PIL import Image
+        except ImportError:
+            path = os.path.join(directory, f'photo-{stamp}.ppm')
+            rows = [data[y * w * 3:(y + 1) * w * 3] for y in range(h - 1, -1, -1)]
+            with open(path, 'wb') as f:
+                f.write(f'P6 {w} {h} 255\n'.encode() + b''.join(rows))
+            return f'Photo saved: {path}'
+        path = os.path.join(directory, f'photo-{stamp}.png')
+        Image.frombytes('RGB', (w, h), data).transpose(Image.FLIP_TOP_BOTTOM).save(path)
+        return f'Photo saved: {path}'
+    except OSError as e:
+        return f'Could not save photo: {e}'
 
 
 # ---------------------------------------------------------------- GIF export
@@ -111,11 +178,7 @@ def _capture_frame(g):
         _clip['n'] += 1
         if _clip['n'] % CLIP_EVERY:
             return
-        w = max(1, glutGet(GLUT_WINDOW_WIDTH))
-        h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
-        glPixelStorei(GL_PACK_ALIGNMENT, 1)
-        data = glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE)
-        _clip['frames'].append((w, h, bytes(data)))
+        _clip['frames'].append(_grab())
         if len(_clip['frames']) > 400:
             g.phase = 'ended'
     if _clip is not None and g.phase != 'replay':
@@ -183,7 +246,10 @@ def tick(_value=0):
     if pads is not None and pads.poll(game, dt) == 'quit':
         _quit()
     _phone_service(game)
-    game.update(dt)
+    if net is not None:
+        net.pump(game, dt)
+    else:
+        game.update(dt)
     glutPostRedisplay()
     glutTimerFunc(C.FRAME_MS, tick, 0)
 
@@ -191,6 +257,8 @@ def tick(_value=0):
 def _quit():
     if phone is not None:
         phone.stop()
+    if net is not None:
+        net.close()
     if bool(glutLeaveMainLoop):
         glutLeaveMainLoop()
     else:  # glutLeaveMainLoop is freeglut-only
@@ -198,15 +266,31 @@ def _quit():
 
 
 def keyboard(key, x, y):
-    if game.key_down(key.decode('latin-1').lower()) == 'quit':
+    k = key.decode('latin-1').lower()
+    if net is not None:
+        if net.key(game, k, True) == 'quit':
+            _quit()
+        return
+    if game.key_down(k) == 'quit':
         _quit()
 
 
 def keyboard_up(key, x, y):
-    game.key_up(key.decode('latin-1').lower())
+    k = key.decode('latin-1').lower()
+    if net is not None:
+        net.key(game, k, False)
+        return
+    game.key_up(k)
 
 
 def special(key, x, y):
+    if game.photo:
+        cam = game.photo_cam
+        if key in (GLUT_KEY_LEFT, GLUT_KEY_RIGHT):
+            cam[0] += 4 if key == GLUT_KEY_RIGHT else -4
+        elif key in (GLUT_KEY_UP, GLUT_KEY_DOWN):
+            cam[1] = max(0.2, min(12.0, cam[1] + (0.2 if key == GLUT_KEY_UP else -0.2)))
+        return
     if game.camera != 'orbit':
         return
     if key == GLUT_KEY_LEFT:
@@ -238,7 +322,36 @@ def reshape(w, h):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Penalty Shootout')
     parser.add_argument('--replay', metavar='FILE', help='watch a saved shootout replay file')
+    parser.add_argument('--duel', metavar='FILE', help="face a friend's ghost duel file")
+    parser.add_argument('--host', nargs='?', const=0, type=int, metavar='PORT',
+                        help=f'host a LAN game (default port {50505}) and wait for a friend to join')
+    parser.add_argument('--join', metavar='IP[:PORT]', help='join a LAN game hosted by a friend')
     return parser.parse_known_args(argv)
+
+
+def start_lan(args, g):
+    """Host or join before the window opens. Returns an error message or None."""
+    global net
+    from . import net as lan
+    try:
+        if args.join:
+            print(f'Joining {args.join}...')
+            net = lan.NetSession(lan.connect(args.join), 'p2')
+            if not net.start_join(g):
+                net = None
+                return 'The host did not answer'
+        else:
+            port = args.host or lan.PORT
+            server = lan.listen(port)
+            print(f'Hosting on port {port}: ask your friend to run with --join <this computer\'s IP>:{port}')
+            print('Waiting for them to join (Ctrl+C to give up)...')
+            net = lan.NetSession(lan.accept(server), 'p1')
+            server.close()
+            net.start_host(g)
+    except OSError as e:
+        net = None
+        return f'LAN game failed: {e}'
+    return None
 
 
 def main():
@@ -251,7 +364,12 @@ def main():
     glutCreateWindow(b'Penalty Shootout')
     render.init_gl()
     controls.load()
+    added = scenarios.load_mods(teams=C.TEAMS)
     game = Game(audio=Audio())
+    if added:
+        game.toast = (f'Loaded {added} mod item(s) from {scenarios.MOD_DIR}', 0.0)
+    if not game.stats['tutorial_done'] and not (args.replay or args.duel or args.host is not None or args.join):
+        game.mode = 'tutorial'                 # first run: start with the coach
     pads = Gamepads()
     if pads.connected:
         game.toast = (f'{pads.connected} gamepad(s) connected', 0.0)
@@ -261,6 +379,16 @@ def main():
                 game.load_replay(json.load(f))
         except (OSError, ValueError, KeyError) as e:
             game.toast = (f'Could not load replay: {e}', 0.0)
+    if args.duel:
+        data = Game.read_duel(args.duel)
+        if data:
+            game.load_duel(data)
+        else:
+            game.toast = (f'Could not read the duel file {args.duel}', 0.0)
+    if args.host is not None or args.join:
+        err = start_lan(args, game)
+        if err:
+            game.toast = (err, 0.0)
     glutDisplayFunc(display)
     glutReshapeFunc(reshape)
     glutKeyboardFunc(keyboard)

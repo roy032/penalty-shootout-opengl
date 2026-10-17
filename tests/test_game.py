@@ -204,7 +204,7 @@ def test_keeper_takes_the_eleventh_kick(tmp_path):
     g.comp.rules.results = {'p1': [True] * 10, 'p2': [True] * 10}
     g.comp.rules.first = 'p1'
     assert g.comp.taker_is_keeper('p1')
-    assert g.comp.taker('p1') == 'Goalkeeper'
+    assert g.comp.taker('p1').startswith('No. 1 ')
 
 
 def test_replay_file_round_trip(tmp_path):
@@ -231,8 +231,8 @@ def test_rebind_keys(tmp_path, monkeypatch):
         assert g.rebind == ('p1', 0)
         g.key_down('p')                         # reserved: refused
         assert g.rebind == ('p1', 0)
-        g.key_down('z')
-        assert CONTROLS['p1']['left'] == 'z' and g.rebind == ('p1', 1)
+        g.key_down('b')
+        assert CONTROLS['p1']['left'] == 'b' and g.rebind == ('p1', 1)
         g.key_down('d')                         # still P1's 'right': allowed for that action
         assert g.rebind == ('p1', 2)
         g.key_down('\x1b')

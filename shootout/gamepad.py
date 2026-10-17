@@ -11,7 +11,7 @@ import os
 from .controls import CONTROLS
 
 DEADZONE = 0.5
-BUTTONS = {0: 'shoot', 1: 'special', 2: 'extra1', 3: 'extra2'}
+BUTTONS = {0: 'shoot', 1: 'special', 2: 'extra1', 3: 'extra2', 5: 'extra3'}   # 5: right bumper
 START, BACK = 7, 6
 RUMBLE_EVERY = 0.3
 

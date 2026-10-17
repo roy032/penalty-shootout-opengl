@@ -50,6 +50,10 @@ class Kick:
 
     def _decide(self, dt):
         ball = self.ball
+        if not C.HAS_BAR and physics.crossed_line(ball) and abs(ball.pos[0]) < C.GOAL_HALF_WIDTH:
+            disputed = self._park_call(ball)
+            if disputed:
+                return disputed
         if physics.is_goal_position(ball):
             if self.frame_hit == 'post':
                 return True, 'IN OFF THE POST!'
@@ -84,3 +88,14 @@ class Kick:
         if self.frame_hit == 'bar':
             return False, 'OFF THE BAR!'
         return False, 'MISSED!'
+
+    def _park_call(self, ball):
+        """No crossbar: anything near the imaginary bar is argued over. The
+        call is a coin flip, but a repeatable one, so replays agree."""
+        y = (self.crossing or (ball.pos[0], ball.pos[1]))[1]
+        if abs(y - C.GOAL_HEIGHT) > 0.3:
+            return None
+        heads = int(abs(ball.pos[0]) * 1000 + y * 100) % 2 == 0
+        if heads:
+            return True, 'GOAL! (HE SAYS IT WAS UNDER)'
+        return False, 'OVER! (SAYS THE KEEPER)'

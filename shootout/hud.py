@@ -9,10 +9,11 @@ from OpenGL.GL import *  # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
 from OpenGL.GLUT import *  # noqa: F401,F403
 
-from . import config as C, controls, stats
+from . import achievements, config as C, controls, stats
 from .controls import CONTROLS
 from .game import DRILL_ZONES, MODE_LABELS
-from .modes import KingOfTheGoal, Knockout, MatchPenaltyComp, ShootoutComp, TrainingComp
+from .modes import (CAREER_TRAITS, CAREER_XP, CHALLENGES, ROUND_NAMES, ChallengeComp, KingOfTheGoal,
+                    Knockout, MatchPenaltyComp, ShootoutComp, TournamentComp, TrainingComp, TutorialComp)
 from .scenarios import SCENARIOS
 
 W, H = 1000.0, 800.0
@@ -169,9 +170,21 @@ def _match_label(g):
     if isinstance(comp, Knockout):
         done = len(comp.history)
         return f'Knockout: tie {done + 1} of {len(comp.players) - 1}'
-    label = MODE_LABELS[g.mode]
-    if g.mode in ('pvc', 'match', 'training'):
-        label += ' ' + g.difficulty.capitalize()
+    if g.local_slot is not None:
+        label = MODE_LABELS['lan']
+    else:
+        label = MODE_LABELS[g.mode]
+    if isinstance(comp, TournamentComp):
+        label += ': ' + ROUND_NAMES[min(comp.round, 2)]
+    elif isinstance(comp, ChallengeComp):
+        label += ': ' + comp.spec['label']
+    if g.mode in ('pvc', 'match', 'training', 'manager', 'tournament', 'career'):
+        lvl = g.level()
+        label += ' ' + (f"Auto ({100 * g.stats['auto_level']:.0f}%)" if lvl == 'auto' else lvl.capitalize())
+    if C.VARIANT != 'stadium':
+        label += '  |  ' + C.VARIANTS[C.VARIANT]['label']
+    if getattr(getattr(comp, 'rules', None), 'order', 'abab') == 'abba':
+        label += '  |  ABBA'
     if comp.sudden_death_label and comp.in_sudden_death():
         label += '  |  SUDDEN DEATH'
     return label
@@ -212,6 +225,19 @@ def scoreboard(g):
         if g.phase in ('walk', 'aim', 'runup', 'flight') and g.kicker == slot:
             circle(x + w - 40, ry + 5, 4, GOLD)
     text(x + w / 2, y + 6, _match_label(g), SMALL, (0.8, 0.8, 0.85), 'center')
+    winprob_bar(g, x, y - 18, w)
+
+
+def winprob_bar(g, x, y, w):
+    """Live chance of winning, worked out exactly from the score."""
+    p = g.win_prob()
+    if p is None or g.phase in ('toss', 'intro'):
+        return
+    rect(x, y - 19, w, 31, (0.05, 0.05, 0.08), 0.75)
+    rect(x + 2, y + 2, (w - 4) * p, 8, g.comp.kit('p1')['shirt'])
+    rect(x + 2 + (w - 4) * p, y + 2, (w - 4) * (1 - p), 8, g.comp.kit('p2')['shirt'])
+    text(x + 6, y - 14, f"Win chance  {g.name('p1')[:10]} {100 * p:.0f}%", SMALL, (0.85, 0.85, 0.9))
+    text(x + w - 6, y - 14, f"{100 * (1 - p):.0f}% {g.name('p2')[:10]}", SMALL, (0.85, 0.85, 0.9), 'right')
 
 
 def king_table(g, x, top, compact=False):
@@ -304,7 +330,8 @@ def prompts(g):
             aim = ''.join(key_name(k[a]) for a in ('up', 'left', 'down', 'right'))
             if g.phase == 'aim':
                 lines.append(f"{g.taker_label()} shooting: aim {aim}  |  {key_name(k['special'])} shot type  |  "
-                             f"{key_name(k['extra1'])} disguise  |  {key_name(k['shoot'])} run-up")
+                             f"{key_name(k['extra1'])} run-up style  |  {key_name(k['extra2'])} gaze  |  "
+                             f"{key_name(k['shoot'])} run-up")
             else:
                 lines.append(f"{g.name(kicker)}: press {key_name(k['shoot'])} to set power (green = sweet spot)")
             if g.mode == 'training':
@@ -319,7 +346,17 @@ def prompts(g):
             lines.append(f"{g.name(keeper)} in goal: dive {key_name(k['left'])}/{key_name(k['right'])}, "
                          f"stay {key_name(k['down'])}, high/low {key_name(k['up'])}  |  "
                          f"{key_name(k['special'])} wave ({3 - g.taunts})  |  {key_name(k['extra1'])} shuffle  |  "
-                         f"{key_name(k['extra2'])} fake")
+                         f"{key_name(k['extra2'])} fake  |  {key_name(k['extra3'])} point")
+            lines.append(f"In the dive: {key_name(k['shoot'])} as the ball arrives to stretch  |  hold a direction "
+                         f"to push a parry wide, {key_name(k['down'])} to palm it down")
+    elif g.phase == 'ritual':
+        if g.is_human(kicker) and not g.ritual_kicker:
+            lines.append(f"{key_name(CONTROLS[kicker]['shoot'])}: take your time placing the ball (calms the nerves)")
+        if g.is_human(keeper) and not g.took_ball:
+            lines.append(f"{key_name(CONTROLS[keeper]['extra2'])}: pick the ball up and make him wait "
+                         "(gets under his skin, risks a booking)")
+    elif g.phase == 'flight' and g.is_human(keeper) and g.keeper.committed() and g.keeper.stretch is None:
+        lines.append(f"{key_name(CONTROLS[keeper]['shoot'])}: STRETCH!")
     elif g.phase == 'result' and g.result and g.result[0] and g.is_human(kicker) and g.celebration:
         k = CONTROLS[kicker]
         lines.append(f"Celebration: {g.celebration}  ({key_name(k['special'])} to change)")
@@ -330,11 +367,12 @@ def prompts(g):
         text(500, y, s, SMALL, WHITE, 'center')
         y += 22
     if g.phase in ('aim', 'runup') and g.is_human(kicker) and g.forced is None:
-        rect(20, 110, 190, 70, (0.05, 0.05, 0.08), 0.75)
+        rect(20, 92, 190, 88, (0.05, 0.05, 0.08), 0.75)
         text(30, 160, 'SHOT', SMALL, (0.7, 0.7, 0.75))
         text(30, 138, C.SHOT_TYPES[g.shot_kind]['label'], MEDIUM, GOLD)
-        text(30, 118, 'Disguised run-up' if g.disguise else 'Open body shape', SMALL,
-             GOLD if g.disguise else (0.7, 0.7, 0.75))
+        text(30, 118, C.RUNUPS[g.runup]['label'], SMALL, GOLD if g.disguise else (0.85, 0.85, 0.9))
+        gaze = {'stare': 'Staring him down', 'away': 'Eyes on the ball', None: 'Gaze: natural'}[g.gaze]
+        text(30, 100, gaze, SMALL, (0.85, 0.85, 0.9))
         if g.phase == 'aim':
             composure(g)
     if g.phase in ('aim', 'runup') and g.is_human(keeper) and g.forced is None:
@@ -349,6 +387,8 @@ def prompts(g):
         else:
             plan = 'Locked in' if g.keeper_dir is not None else 'Wait and react'
         text(800, 130, plan, MEDIUM, GOLD)
+        if g.keeper.point_dir:
+            text(800, 106, 'Pointing ' + ('right' if g.keeper.point_dir > 0 else 'left'), SMALL, WHITE)
 
 
 def _stakes_label(g):
@@ -380,17 +420,50 @@ def toss_panel(g):
         k = CONTROLS[w]
         hint = f"{key_name(k['left'])}: kick towards your fans    {key_name(k['right'])}: towards theirs"
     elif g.toss_stage == 'sub':
-        parts = []
-        for slot in ('p1', 'p2'):
-            if g.is_human(slot):
-                on = 'ON' if g.comp.specialist[slot] else 'OFF'
-                parts.append(f"{g.name(slot)}: {key_name(CONTROLS[slot]['extra1'])} specialist keeper sub ({on})")
-        hint = '   |   '.join(parts) or 'Managers are deciding on a keeper sub...'
+        if not any(g.controller(s) for s in ('p1', 'p2')):
+            hint = 'The managers are picking their takers...'
     if hint:
         text(500, 370, hint, SMALL, (0.85, 0.85, 0.9), 'center')
     if g.toss_stage == 'sub':
-        text(500, 345, 'A specialist has a longer reach but is a worse kicker if the keepers have to take one.',
-             SMALL, (0.65, 0.65, 0.7), 'center')
+        for i, slot in enumerate(('p1', 'p2')):
+            if g.controller(slot):
+                lineup_panel(g, slot, 30 if slot == 'p1' else 520, i)
+
+
+def lineup_panel(g, slot, x, i):
+    """Before the shootout: keeper sub and style, fresh legs, and who kicks when."""
+    k = CONTROLS[slot]
+    order = g.lineup_for(slot)
+    lu = g.lineup[slot]
+    w, top = 450, 320
+    h = 40 + 17 * min(11, len(order)) + 86
+    y = top - h
+    rect(x, y, w, h, (0.04, 0.05, 0.09), 0.93)
+    outline(x, y, w, h, GOLD if not lu['ready'] else GREEN)
+    text(x + 12, top - 22, f"{g.name(slot)}: TAKERS", MEDIUM, GOLD)
+    if lu['ready']:
+        text(x + w - 12, top - 22, 'READY', MEDIUM, GREEN, 'right')
+    ry = top - 44
+    for n, p in enumerate(order[:11]):
+        focus = n == lu['cursor']
+        if focus:
+            rect(x + 6, ry - 4, w - 12, 17, (0.16, 0.4, 0.22), 0.9)
+        tag = ' (sub, cold)' if p.sub else (' GK' if p.keeper else '')
+        col = GOLD if n == 4 else WHITE
+        text(x + 12, ry, f"{n + 1}. {p.label}{tag}", SMALL, col)
+        text(x + w - 12, ry, f"Comp {100 * p.composure:.0f}  Pow {100 * p.power:.0f}  Pl {100 * p.placement:.0f}  "
+             f"{p.foot}", SMALL, (0.8, 0.8, 0.85), 'right')
+        ry -= 17
+    style = C.KEEPER_STYLES[g.comp.keeper_style[slot]]['label']
+    on = 'ON' if g.comp.specialist[slot] else 'OFF'
+    lines = [f"{key_name(k['up'])}/{key_name(k['down'])} pick  {key_name(k['left'])}/{key_name(k['right'])} move up/down"
+             f"  {key_name(k['shoot'])} ready  (No. 5 kicks fifth: pick a cool head)",
+             f"{key_name(k['extra1'])} specialist keeper: {on}   {key_name(k['special'])} keeper: {style}",
+             f"{key_name(k['extra2'])} fresh subs for the kicks: {g.comp.subs[slot]} (fresh legs, cold first kick)"]
+    for ln in lines:
+        ry -= 4
+        text(x + 12, ry, ln, SMALL, (0.85, 0.85, 0.9))
+        ry -= 18
 
 
 def banners(g):
@@ -400,13 +473,20 @@ def banners(g):
     if g.phase == 'toss':
         toss_panel(g)
         return
-    if g.phase == 'walk':
+    if g.phase == 'interlude':
+        bracket_panel(g)
+        return
+    if g.phase in ('walk', 'ritual'):
         label = _stakes_label(g)
         if label:
             big_text(500, 600, label[0], 38, label[1])
-        big_text(500, 560, g.taker_label(), 22, WHITE, 2.5)
-        end = 'towards his own fans' if g.end_fans == g.kicker else 'towards the away end'
-        text(500, 530, f'The long walk, {end}...   (SPACE to skip)', SMALL, (0.85, 0.85, 0.9), 'center')
+        if g.phase == 'walk':
+            big_text(500, 560, g.taker_label(), 22, WHITE, 2.5)
+            end = 'towards his own fans' if g.end_fans == g.kicker else 'towards the away end'
+            text(500, 530, f'The long walk, {end}...   (SPACE to skip)', SMALL, (0.85, 0.85, 0.9), 'center')
+        elif g.ritual_kicker or g.took_ball:
+            text(500, 540, g.message, MEDIUM, WHITE, 'center')
+        lower_third(g)
     if g.phase == 'aim' and g.phase_t < 2.2:
         label = _stakes_label(g)
         if g.retake:
@@ -449,6 +529,84 @@ def banners(g):
             big_text(500, 640, 'THE DECISIVE KICK', 26, GOLD, 3)
         if g.export_request:
             text(56, 730, 'Recording clip...', SMALL, RED)
+
+
+def lower_third(g):
+    """TV caption for the taker: ratings and his record from the spot."""
+    info = g.lower_third()
+    if not info:
+        return
+    x, y, w, h = 40, 200, 430, 92
+    rect(x, y, w, h, (0.04, 0.05, 0.1), 0.9)
+    rect(x, y, 8, h, g.comp.kit(g.kicker)['shirt'])
+    text(x + 20, y + h - 26, info['label'].upper(), MEDIUM, WHITE)
+    sub = '  |  FRESH SUB' if info['sub'] else ''
+    text(x + w - 12, y + h - 26, info['team'][:14] + sub, SMALL, GOLD, 'right')
+    for n, (name, val) in enumerate((('Composure', info['composure']), ('Power', info['power']),
+                                     ('Placement', info['placement']))):
+        bx = x + 20 + n * 135
+        text(bx, y + 40, name, SMALL, (0.8, 0.8, 0.85))
+        rect(bx, y + 26, 120, 8, GREY, 0.6)
+        rect(bx, y + 26, 120 * val, 8, GREEN if val > 0.6 else GOLD if val > 0.4 else RED)
+    text(x + 20, y + 8, info['foot'] + ('  |  ' + info['record'] if info['record'] else ''), SMALL, WHITE)
+
+
+def notes_panel(g):
+    """The keeper's water-bottle notes on this taker."""
+    if not g.bottle_note or g.phase not in ('walk', 'ritual', 'aim', 'runup'):
+        return
+    x, y, w = 700, 300, 280
+    lines = wrap(g.bottle_note, w - 20)
+    h = 34 + 18 * len(lines)
+    rect(x, y, w, h, (0.85, 0.9, 0.95), 0.92)
+    text(x + 10, y + h - 20, 'WATER BOTTLE NOTES', SMALL, (0.1, 0.2, 0.5))
+    yy = y + h - 40
+    for ln in lines:
+        text(x + 10, yy, ln, SMALL, (0.05, 0.05, 0.1))
+        yy -= 18
+
+
+def commentary_line(g):
+    if g.commentary == 'off' or not g.comment or g.clock - g.comment[1] > 4.5:
+        return
+    s = '"' + g.comment[0] + '"'
+    tw = text_width(s, MEDIUM)
+    rect(500 - tw / 2 - 14, 638, tw + 28, 28, (0.02, 0.02, 0.05), 0.7)
+    text(500, 646, s, MEDIUM, (0.95, 0.95, 0.75), 'center')
+
+
+def coach_panel(g):
+    """Tutorial instructions or the challenge brief, top left."""
+    comp = g.comp
+    if isinstance(comp, TutorialComp) and not comp.finished:
+        title, body = f'COACH  (step {comp.step + 1} of 7)', comp.instruction()
+    elif isinstance(comp, ChallengeComp) and g.phase not in ('ended', 'replay'):
+        title, body = comp.spec['label'].upper(), comp.spec['desc'] + f"  Best: {g.stats['challenges'].get(comp.kind, 0)}"
+    else:
+        return
+    lines = wrap(body, 300)
+    h = 34 + 18 * len(lines)
+    x, y = 20, 690 - h
+    rect(x, y, 330, h, (0.05, 0.1, 0.06), 0.9)
+    outline(x, y, 330, h, GREEN)
+    text(x + 12, y + h - 22, title, SMALL, GOLD)
+    yy = y + h - 42
+    for ln in lines:
+        text(x + 12, yy, ln, SMALL, WHITE)
+        yy -= 18
+
+
+def bracket_panel(g):
+    comp = g.comp
+    rect(200, 200, 600, 420, (0.04, 0.05, 0.09), 0.94)
+    outline(200, 200, 600, 420, GOLD)
+    big_text(500, 570, comp.interlude() or 'TOURNAMENT', 26, GOLD, 3)
+    y = 525
+    for line in comp.bracket()[-12:]:
+        mine = comp.teams[0]['name'] in line
+        text(500, y, line, SMALL, GOLD if mine else WHITE, 'center')
+        y -= 24
+    text(500, 225, 'SPACE or ENTER for the next round', MEDIUM, WHITE, 'center')
 
 
 def _heatmap(x, y, w, side, log):
@@ -503,6 +661,10 @@ def summary(g):
     outline(150, 130, 700, 500, GOLD)
     if isinstance(comp, MatchPenaltyComp):
         title = 'MATCH WON!' if comp.is_human(comp.winner) else 'MATCH LOST'
+    elif isinstance(comp, (ChallengeComp, TutorialComp)):
+        title = comp.winner_name()
+    elif isinstance(comp, TournamentComp):
+        title = 'CHAMPIONS!' if comp.champion else 'KNOCKED OUT'
     else:
         title = f'{comp.winner_name()} WINS!'
     big_text(500, 570, title, 40 if len(title) < 20 else 26, GOLD)
@@ -516,8 +678,13 @@ def summary(g):
         for w, lost in comp.history:
             y -= 24
             text(500, y, f'{w} beat {lost}', SMALL, WHITE, 'center')
-    elif isinstance(comp, MatchPenaltyComp):
-        text(500, 480, 'Where the kick went', SMALL, WHITE, 'center')
+    elif isinstance(comp, TournamentComp):
+        y = 480
+        for line in comp.bracket()[-8:]:
+            text(500, y, line, SMALL, GOLD if comp.teams[0]['name'] in line else WHITE, 'center')
+            y -= 20
+    elif isinstance(comp, (MatchPenaltyComp, ChallengeComp, TutorialComp)):
+        text(500, 480, 'Where the kicks went', SMALL, WHITE, 'center')
         _heatmap(360, 330, 280, None, g.log)
     else:
         for i, side in enumerate(('p1', 'p2')):
@@ -529,6 +696,13 @@ def summary(g):
             off = sum(1 for k in kicks if not k['scored']) - saved
             text(x + 140, 305, f"{sum(k['scored'] for k in kicks)}/{len(kicks)} scored, {saved} saved, "
                  f"{off} off target", SMALL, (0.85, 0.85, 0.9), 'center')
+    if g.unlocked:
+        text(500, 300, 'Unlocked: ' + ', '.join(g.unlocked)[:90], SMALL, GOLD, 'center')
+    if g.daily_grid:
+        y = 284
+        for ln in g.daily_grid.replace('\U0001F7E9', 'O ').replace('\U0001F7E5', 'X ').split('\n'):
+            text(500, y, ln, SMALL, WHITE, 'center')
+            y -= 18
     sc = SCENARIOS[g.scenario] if g.mode == 'famous' and g.playback is None else None
     if sc:
         rect(170, 215, 660, 70, (0.12, 0.1, 0.05), 0.9)
@@ -538,10 +712,28 @@ def summary(g):
             text(185, y, ln, SMALL, WHITE)
             y -= 18
     text(500, 195, stats.summary(g.stats), SMALL, (0.75, 0.8, 0.9), 'center')
-    keys = 'R play again  |  V replay  |  G save GIF clip  |  M menu'
+    keys = 'R play again  |  V replay  |  G GIF clip  |  TAB coach report  |  Y photo  |  M menu'
     if isinstance(comp, ShootoutComp):
-        keys = 'R play again  |  V replay  |  F save replay file  |  G save GIF clip  |  M menu'
+        keys = 'R again  |  V replay  |  F replay file  |  G GIF  |  B share  |  TAB report  |  M menu'
+        share = 'B copies your result grid and saves your kicks as a ghost duel' if g.daily_grid else \
+            'B saves your kicks as a ghost duel for a friend to face'
+        text(500, 172, share, SMALL, GOLD, 'center')
     text(500, 150, keys, MEDIUM, WHITE, 'center')
+    if g.show_report:
+        report_overlay(g)
+
+
+def report_overlay(g):
+    rect(170, 220, 660, 300, (0.03, 0.06, 0.04), 0.96)
+    outline(170, 220, 660, 300, GREEN)
+    big_text(500, 470, "COACH'S REPORT", 26, GOLD, 3)
+    y = 430
+    for line in g.coach_report():
+        for ln in wrap(line, 600, MEDIUM):
+            text(200, y, ln, MEDIUM, WHITE)
+            y -= 24
+        y -= 8
+    text(500, 235, 'TAB to close', SMALL, (0.8, 0.8, 0.85), 'center')
 
 
 def pause_overlay():
@@ -556,22 +748,21 @@ def help_lines():
     def keys(c):
         return (f"{key_name(c['up'])} {key_name(c['left'])} {key_name(c['down'])} {key_name(c['right'])} aim/dive, "
                 f"{key_name(c['shoot'])} shoot, {key_name(c['special'])} shot type / wave arms, "
-                f"{key_name(c['extra1'])} disguise / shuffle, {key_name(c['extra2'])} celebrate / fake")
+                f"{key_name(c['extra1'])} run-up / shuffle, {key_name(c['extra2'])} gaze / fake, "
+                f"{key_name(c['extra3'])} point")
     return [
-        'Kicking: aim with your direction keys, pick a shot type, then start the run-up. Press shoot',
-        'again to stop the power bar: green is the sweet spot. Wait a breath after the whistle (rushing',
-        'hurts, dithering too). Disguise hides your body shape from the keeper at a small cost in accuracy.',
-        'Shots: Placed, Driven, Curler, Chip/Panenka, Knuckleball (wobbles), Skidder (low, fizzes off',
-        'the turf), Stutter (hop and wait for the keeper to move, slow if he holds his ground).',
-        'Keeping: pick a dive before the kick, or react late after it. Shuffle along the line to make',
-        'one side look bigger, fake a lean, or wave your arms. Too much and the referee books you;',
-        'leave your line early and VAR orders a retake. Two yellows and an outfielder goes in goal.',
-        '',
+        'Kicking: aim, pick a shot type and a run-up (angled: more pace but readable; straight; disguised),',
+        'then start the run-up and press shoot again to stop the power bar in the green. Wait a breath',
+        'after the whistle. Gaze: stare the keeper down (calmer, but his antics bite harder) or look away.',
+        'After the walk, press shoot to take your time placing the ball. Each taker has his own ratings.',
+        'Keeping: pick a dive before the kick or react late. Shuffle, fake, wave, point to a corner, or',
+        'pick up the ball to make him wait (risks a booking). In the dive, press shoot as the ball',
+        'arrives to stretch; hold a direction to push a parry wide, or down to palm it in front.',
         'P1: ' + keys(p1),
         'P2: ' + keys(p2),
-        'C camera (walk-on, keeper eye view, orbit with arrows)  |  N sound  |  P pause  |  H help',
-        'After a match: V replay (C changes replay camera)  |  F save replay file  |  G save GIF clip',
-        'Menu: K rebinds keys. Start with --replay FILE to watch a saved shootout.',
+        'C camera  |  Y photo mode (WASD QE move, ENTER saves)  |  N sound  |  P pause  |  H help',
+        'After a match: V replay  |  F replay file  |  G GIF  |  B share (ghost duel, daily grid)  |  TAB report',
+        'Menu: K rebind keys, L achievements. --replay FILE, --duel FILE, --host / --join IP for LAN.',
     ]
 
 
@@ -582,7 +773,7 @@ def help_overlay():
     y = 610
     for line in help_lines():
         text(85, y, line, SMALL, WHITE)
-        y -= 32
+        y -= 38
 
 
 def rebind_overlay(g):
@@ -597,7 +788,7 @@ def rebind_overlay(g):
         text(260, y, controls.ACTION_LABELS[action], MEDIUM, col)
         k = '...' if current else key_name(CONTROLS[slot][action])
         text(740, y, k, MEDIUM, col, 'right')
-        y -= 44
+        y -= 40
     text(500, 190, 'Press a key for the highlighted action  |  ESC cancel', SMALL, (0.8, 0.8, 0.85), 'center')
 
 
@@ -626,17 +817,34 @@ MENU_LABELS = {
     'mode': 'Game mode', 'difficulty': 'Difficulty', 'kicks': 'Kicks each', 'hidden': 'Hidden aim',
     'scenario': 'Famous shootout', 'party_type': 'Party game', 'players': 'Players', 'role': 'You',
     'weather': 'Weather', 'daytime': 'Kick-off', 'assist': 'Assist', 'captions': 'Sound captions',
-    'phone': 'Phone controller', 'start': '',
+    'phone': 'Phone controller', 'start': '', 'order': 'Kick order', 'team1': 'Your team', 'team2': 'Opponents',
+    'challenge': 'Challenge', 'ghost': 'Ghost', 'variant': 'Pitch', 'commentary': 'Commentary',
 }
 MODE_NAMES = {'pvc': 'Player v CPU', 'pvp': 'Player v Player', 'famous': 'Famous shootouts',
-              'match': "90th-minute penalty", 'party': 'Party (3-8 friends)', 'training': 'Training ground'}
+              'match': "90th-minute penalty", 'party': 'Party (3-8 friends)', 'training': 'Training ground',
+              'manager': 'Manager (pick the takers)', 'tournament': 'Tournament (8 teams)', 'career': 'Career',
+              'challenge': 'Challenges', 'daily': 'Daily shootout', 'ghost': 'Ghost duel', 'tutorial': 'Tutorial'}
 
 
 def menu_value(g, row):
     if row == 'mode':
         return MODE_NAMES[g.mode]
     if row == 'difficulty':
+        if g.difficulty == 'auto':
+            return f"Auto (now {100 * g.stats['auto_level']:.0f}% of hard)"
         return g.difficulty.capitalize()
+    if row == 'order':
+        return 'ABBA (2017 trial)' if g.order == 'abba' else 'ABAB (standard)'
+    if row in ('team1', 'team2'):
+        return g.team('p1' if row == 'team1' else 'p2')['name']
+    if row == 'challenge':
+        return CHALLENGES[g.challenge]['label']
+    if row == 'ghost':
+        return g.duels[g.ghost_i % len(g.duels)][0] if g.duels else 'House ghost (built in)'
+    if row == 'variant':
+        return C.VARIANTS[g.variant]['label']
+    if row == 'commentary':
+        return {'off': 'Off', 'text': 'Captions', 'speech': 'Spoken (pyttsx3)'}[g.commentary]
     if row == 'kicks':
         return 'Sudden death only' if g.kicks_per_side == 0 else str(g.kicks_per_side)
     if row == 'hidden':
@@ -649,6 +857,9 @@ def menu_value(g, row):
     if row == 'players':
         return str(g.party_players)
     if row == 'role':
+        if g.mode == 'career':
+            c = g.stats['career'].get(g.role) or {}
+            return ('Striker' if g.role == 'kick' else 'Goalkeeper') + f" ({c.get('xp', 0)} XP)"
         return 'Take the kick' if g.role == 'kick' else 'Keep goal'
     if row == 'weather':
         return C.WEATHER[g.weather]['label']
@@ -668,8 +879,13 @@ def menu(g):
     big_text(500, 715, 'PENALTY SHOOTOUT', 52, GOLD, 5)
     rows = g.menu_rows()
     focus = min(g.menu_focus, len(rows) - 1)
-    top, step = 650, 40
-    bottom = top - step * len(rows) - 50
+    top = 650
+    step = min(40.0, 470.0 / len(rows))
+    bh = min(30.0, step - 4)
+    bottom = top - step * len(rows) - 46
+    hint = mode_hint(g)
+    if hint:
+        text(500, 664, hint, SMALL, (0.85, 0.85, 0.9), 'center')
     rect(180, bottom, 640, top - bottom + 10, (0.06, 0.07, 0.11), 0.92)
     outline(180, bottom, 640, top - bottom + 10, (0.3, 0.45, 0.8))
     MENU_LAYOUT.clear()
@@ -680,24 +896,69 @@ def menu(g):
             _button(380, y - 18, 240, 46, 'KICK OFF', True, focused)
             MENU_LAYOUT[('start', 0)] = (380, y - 18, 240, 46)
             break
-        text(210, y + 8, MENU_LABELS[row], MEDIUM, GOLD if focused else WHITE)
+        text(210, y + bh / 2 - 6, MENU_LABELS[row], MEDIUM, GOLD if focused else WHITE)
         bx = 480
-        _button(bx, y, 34, 30, '<', False, focused)
-        _button(bx + 270, y, 34, 30, '>', False, focused)
-        rect(bx + 38, y, 228, 30, (0.12, 0.14, 0.2) if not focused else (0.16, 0.4, 0.22), 0.95)
-        text(bx + 152, y + 9, menu_value(g, row), SMALL, WHITE, 'center')
-        MENU_LAYOUT[(row, -1)] = (bx, y, 34, 30)
-        MENU_LAYOUT[(row, 1)] = (bx + 270, y, 34, 30)
-        MENU_LAYOUT[(row, 0)] = (bx + 38, y, 228, 30)
+        _button(bx, y, 34, bh, '<', False, focused)
+        _button(bx + 270, y, 34, bh, '>', False, focused)
+        rect(bx + 38, y, 228, bh, (0.12, 0.14, 0.2) if not focused else (0.16, 0.4, 0.22), 0.95)
+        text(bx + 152, y + bh / 2 - 5, menu_value(g, row), SMALL, WHITE, 'center')
+        MENU_LAYOUT[(row, -1)] = (bx, y, 34, bh)
+        MENU_LAYOUT[(row, 1)] = (bx + 270, y, 34, bh)
+        MENU_LAYOUT[(row, 0)] = (bx + 38, y, 228, bh)
         y -= step
-    if g.mode == 'famous':
-        sc = SCENARIOS[g.scenario]
-        panel_text(500, bottom - 24, wrap(sc['intro'], 620)[:2], SMALL, (0.8, 0.8, 0.85), 18)
-    text(500, 95, 'W/S move  |  A/D change  |  ENTER or SPACE start  |  K rebind keys  |  H how to play',
+    text(500, 95, 'W/S move  |  A/D change  |  ENTER start  |  K rebind keys  |  L achievements  |  H how to play',
          SMALL, (0.8, 0.8, 0.85), 'center')
     text(500, 70, stats.summary(g.stats), SMALL, (0.7, 0.75, 0.85), 'center')
     text(500, 30, 'N toggles sound' + ('' if g.audio and g.audio.enabled else ' (sound unavailable: pip install pygame)'),
          SMALL, (0.6, 0.6, 0.65), 'center')
+
+
+MODE_HINTS = {
+    'pvc': 'A shootout against the computer. Your takers have their own ratings.',
+    'pvp': 'Two players, one keyboard (or LAN: --host / --join).',
+    'manager': 'You pick the order of takers, the subs and the keeper; the players do the rest.',
+    'match': 'One penalty in the 90th minute at 1-1. Rebounds are live.',
+    'party': 'King of the Goal or a knockout bracket for 3 to 8 friends.',
+    'training': 'Practise against the drill machine. T shows the trajectory.',
+    'tournament': 'Eight teams, every tie on penalties. The keepers get sharper each round.',
+    'daily': 'The same shootout for everyone today. Share your result grid.',
+    'ghost': "Face a friend's kicks exactly as struck. Press B after any shootout to save your own.",
+    'tutorial': 'A coach walks you through the controls, step by step.',
+}
+
+
+def mode_hint(g):
+    if g.mode == 'famous':
+        return SCENARIOS[g.scenario]['intro'][:110] + ('...' if len(SCENARIOS[g.scenario]['intro']) > 110 else '')
+    if g.mode == 'challenge':
+        best = g.stats['challenges'].get(g.challenge, 0)
+        return CHALLENGES[g.challenge]['desc'] + f'  Best: {best}'
+    if g.mode == 'career':
+        c = g.stats['career'].get(g.role) or {}
+        xp = c.get('xp', 0)
+        nxt = next((n for n in CAREER_XP if n > xp), None)
+        traits = ', '.join(c.get('traits', [])) or 'none yet'
+        left = f'next unlock at {nxt} XP' if nxt else 'all traits unlocked'
+        gold = '  |  GOLD KIT' if c.get('gold') else ''
+        names = ', '.join(n for n, _ in CAREER_TRAITS[g.role])
+        return f"{xp} XP, {c.get('wins', 0)}/{c.get('games', 0)} won, {left}. Traits: {traits}{gold}" if c else \
+            f'Climb from easy fixtures to hard ones. Unlock: {names}'
+    return MODE_HINTS.get(g.mode, '')
+
+
+def achievements_overlay(g):
+    got = set(g.stats.get('achievements', []))
+    rect(150, 110, 700, 600, (0.04, 0.05, 0.09), 0.97)
+    outline(150, 110, 700, 600, GOLD)
+    big_text(500, 660, f'ACHIEVEMENTS  {len(got)}/{len(achievements.ACHIEVEMENTS)}', 26, GOLD, 3)
+    y = 620
+    for key, name, desc in achievements.ACHIEVEMENTS:
+        have = key in got
+        circle(185, y + 5, 7, GOLD if have else GREY)
+        text(200, y, name, MEDIUM, GOLD if have else (0.75, 0.75, 0.8))
+        text(400, y, desc, SMALL, WHITE if have else (0.6, 0.6, 0.65))
+        y -= 31
+    text(500, 125, 'L or ENTER to close', SMALL, (0.8, 0.8, 0.85), 'center')
 
 
 def _button(x, y, w, h, label, active, focused, disabled=False):
@@ -724,6 +985,10 @@ def draw(g):
         menu(g)
         if g.rebind is not None:
             rebind_overlay(g)
+        if g.show_achievements:
+            achievements_overlay(g)
+    elif g.photo:
+        text(500, 20, 'PHOTO MODE: A/D orbit, W/S height, Q/E zoom, ENTER save, Y exit', SMALL, WHITE, 'center')
     else:
         scoreboard(g)
         wind_gauge(g)
@@ -731,6 +996,9 @@ def draw(g):
             power_bar(g)
         prompts(g)
         banners(g)
+        notes_panel(g)
+        coach_panel(g)
+        commentary_line(g)
         if g.mode == 'training' and g.phase not in ('ended', 'replay'):
             zone_panel(g)
         if g.phase == 'ended':

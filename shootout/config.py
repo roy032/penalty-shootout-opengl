@@ -125,3 +125,86 @@ PARTY_COLOURS = [
     (0.85, 0.12, 0.15), (0.15, 0.35, 0.9), (0.95, 0.8, 0.1), (0.15, 0.7, 0.3),
     (0.6, 0.2, 0.75), (0.95, 0.5, 0.1), (0.1, 0.75, 0.8), (0.9, 0.9, 0.9),
 ]
+
+# --- Pitch variants: goal size, spot distance and how the ball behaves ---
+# Changed in place by apply_variant(); everything reads them at run time.
+HAS_BAR = True                  # park goals have no crossbar: the keeper decides
+HAS_NET = True
+POST_HEIGHT = None              # jumpers for posts only stop a ball along the ground
+BOUNCE = 1.0                    # how lively the ball is off the ground
+VARIANT = 'stadium'
+_STADIUM = dict(GOAL_HALF_WIDTH=GOAL_HALF_WIDTH, GOAL_HEIGHT=GOAL_HEIGHT, SPOT_DISTANCE=SPOT_DISTANCE,
+                SPOT_Z=SPOT_Z, GOAL_DEPTH=GOAL_DEPTH, HAS_BAR=True, HAS_NET=True, POST_HEIGHT=None,
+                BOUNCE=1.0)
+VARIANTS = {
+    'stadium': dict(label='Stadium', friction=None),
+    # Jumpers for goalposts: no bar, no net, about the size of a small goal
+    'park': dict(label='Jumpers for goalposts', GOAL_HALF_WIDTH=2.5, GOAL_HEIGHT=2.0, SPOT_DISTANCE=10.0,
+                 HAS_BAR=False, HAS_NET=False, POST_HEIGHT=0.25, friction=1.6),
+    # Futsal: 3 x 2 m goal, the spot at 6 m, a heavier ball that hardly bounces
+    'futsal': dict(label='Futsal', GOAL_HALF_WIDTH=1.5, GOAL_HEIGHT=2.0, SPOT_DISTANCE=6.0, GOAL_DEPTH=1.0,
+                   BOUNCE=0.45, friction=0.9),
+    # Beach: sand kills a rolling ball, so skidders are pointless
+    'beach': dict(label='Beach', GOAL_HALF_WIDTH=2.75, GOAL_HEIGHT=2.2, SPOT_DISTANCE=9.0, friction=4.5),
+}
+VARIANT_ORDER = ['stadium', 'park', 'futsal', 'beach']
+
+
+def apply_variant(name):
+    """Switch the goal and ball to a pitch variant (module-level values)."""
+    global VARIANT
+    g = globals()
+    for k, v in _STADIUM.items():
+        g[k] = v
+    for k, v in VARIANTS[name].items():
+        if k.isupper():
+            g[k] = v
+    g['SPOT_Z'] = GOAL_LINE_Z + g['SPOT_DISTANCE']
+    VARIANT = name
+
+
+def shot_order():
+    """Shot types on offer: on sand a skidder just dies."""
+    return [k for k in SHOT_ORDER if not (VARIANT == 'beach' and k == 'skidder')]
+
+
+# --- Squads: ratings are 0..1 ---
+COLD_SUB_SIGMA = 1.25           # a sub who has just come on is cold for his first kick
+TIRED_SPEED = 0.97              # 120 minutes in the legs
+FRESH_SPEED = 1.03
+
+# --- Run-up styles: (cue multiplier, speed multiplier, spread multiplier) ---
+RUNUPS = {
+    'angled': dict(label='Angled run-up', cue=1.15, speed=1.04, sigma=1.0),
+    'straight': dict(label='Straight run-up', cue=0.7, speed=0.95, sigma=1.0),
+    'disguised': dict(label='Disguised run-up', cue=0.3, speed=1.0, sigma=DISGUISE_SIGMA),
+}
+RUNUP_ORDER = ['angled', 'straight', 'disguised']
+
+# --- Keeper styles chosen at the toss ---
+KEEPER_STYLES = {
+    'standard': dict(label='Standard', reach=0.0, dive_time=0.0, scale=1.0),
+    'tall': dict(label='Tall, slower', reach=0.12, dive_time=0.03, scale=1.08),
+    'small': dict(label='Small, explosive', reach=-0.1, dive_time=-0.045, scale=0.93),
+}
+KEEPER_STYLE_ORDER = ['standard', 'tall', 'small']
+FINGERTIP_WINDOW = 0.18         # a stretch pressed this close to the ball's arrival adds reach
+FINGERTIP_BONUS = 0.14
+AI_FINGERTIP = {'easy': 0.08, 'medium': 0.2, 'hard': 0.35}
+
+# --- Adaptive difficulty: nudges so the human scores about 73% ---
+AUTO_UP = 0.03
+AUTO_DOWN = 0.08
+
+# --- Teams for PvC and PvP (mods can add more) ---
+TEAMS = [
+    dict(name='REDS', shirt=(0.85, 0.12, 0.15), shorts=(1.0, 1.0, 1.0), keeper=(0.15, 0.75, 0.25)),
+    dict(name='BLUES', shirt=(0.15, 0.35, 0.9), shorts=(0.1, 0.1, 0.15), keeper=(0.95, 0.8, 0.1)),
+    dict(name='WHITES', shirt=(0.95, 0.95, 0.95), shorts=(0.1, 0.1, 0.12), keeper=(0.2, 0.2, 0.25)),
+    dict(name='GREENS', shirt=(0.1, 0.55, 0.25), shorts=(1.0, 1.0, 1.0), keeper=(0.6, 0.2, 0.7)),
+    dict(name='ORANGES', shirt=(0.95, 0.5, 0.1), shorts=(1.0, 1.0, 1.0), keeper=(0.1, 0.1, 0.12)),
+    dict(name='STRIPES', shirt=(0.1, 0.1, 0.12), shorts=(0.1, 0.1, 0.12), keeper=(0.95, 0.8, 0.1)),
+    dict(name='SKY BLUES', shirt=(0.45, 0.7, 0.95), shorts=(1.0, 1.0, 1.0), keeper=(0.9, 0.3, 0.1)),
+    dict(name='PURPLES', shirt=(0.45, 0.15, 0.6), shorts=(1.0, 1.0, 1.0), keeper=(0.2, 0.75, 0.3)),
+]
+CAREER_GOLD_KIT = (0.95, 0.78, 0.2)

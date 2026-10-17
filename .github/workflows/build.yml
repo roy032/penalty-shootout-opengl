@@ -1,0 +1,29 @@
+name: windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install freeglut
+        run: '& "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install freeglut:x64-windows'
+      - name: Install Python packages
+        run: pip install -r requirements.txt pyttsx3 pyinstaller
+      - name: Build
+        run: pyinstaller --noconfirm penalty_shootout.spec
+      - name: Check the exe starts
+        run: |
+          $p = Start-Process dist\PenaltyShootout\PenaltyShootout.exe -ArgumentList '--help' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PenaltyShootout-windows
+          path: dist/PenaltyShootout

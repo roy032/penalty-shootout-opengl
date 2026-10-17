@@ -128,9 +128,10 @@ def _collide_posts(ball):
     r = C.BALL_RADIUS + C.POST_RADIUS
     px, py, pz = ball.pos
     cz = C.GOAL_LINE_Z - C.POST_RADIUS
+    top = C.GOAL_HEIGHT + C.POST_RADIUS if C.POST_HEIGHT is None else C.POST_HEIGHT
     for side in (-1, 1):
         cx = side * (C.GOAL_HALF_WIDTH + C.POST_RADIUS)
-        if py <= C.GOAL_HEIGHT + C.POST_RADIUS:
+        if py <= top:
             d = math.hypot(px - cx, pz - cz)
             if d < r and d > 1e-6:
                 n = [(px - cx) / d, 0.0, (pz - cz) / d]
@@ -139,7 +140,7 @@ def _collide_posts(ball):
                 _bounce(ball, n, 0.6)
                 return 'post'
     cy = C.GOAL_HEIGHT + C.POST_RADIUS
-    if abs(px) <= C.GOAL_HALF_WIDTH + C.POST_RADIUS:
+    if C.HAS_BAR and abs(px) <= C.GOAL_HALF_WIDTH + C.POST_RADIUS:
         d = math.hypot(py - cy, pz - cz)
         if d < r and d > 1e-6:
             n = [0.0, (py - cy) / d, (pz - cz) / d]
@@ -152,6 +153,8 @@ def _collide_posts(ball):
 
 def _collide_net(ball):
     """Once inside the goal the net soaks up the ball's speed."""
+    if not C.HAS_NET:
+        return False
     x, y, z = ball.pos
     r = C.BALL_RADIUS
     inside = abs(x) < C.GOAL_HALF_WIDTH and y < C.GOAL_HEIGHT and z < C.GOAL_LINE_Z - r
@@ -230,7 +233,7 @@ def step(ball, dt):
         if ball.vel[1] < -0.6:
             events.append('bounce')
             keep = min(0.98, 0.85 * ball.skid)
-            ball.vel[1] = -ball.vel[1] * (0.5 / ball.skid)
+            ball.vel[1] = -ball.vel[1] * (0.5 / ball.skid) * C.BOUNCE
             ball.vel[0] *= keep
             ball.vel[2] *= keep
         else:
