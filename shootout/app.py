@@ -12,9 +12,9 @@ from OpenGL.GL import *  # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
 from OpenGL.GLUT import *  # noqa: F401,F403
 
-from . import config as C, controls, hud, render, scenarios
+from . import config as C, controls, gfx, hud, render, scenarios
 from .audio import Audio
-from .game import WALK_TIME, Game
+from .game import WALK_TIME, Game, auto_camera
 from .gamepad import Gamepads
 
 CLIP_DIR = os.path.join(os.path.expanduser('~'), 'penalty_shootout_clips')
@@ -40,7 +40,19 @@ def camera_eye(g, view):
         a = math.radians(ang)
         return (cx + dist * math.sin(a), height, cz + dist * math.cos(a)), (cx, max(0.4, by * 0.6 + 0.4), cz)
     if g.phase == 'replay':
-        cam = g.replay_cam
+        cam = replay_camera(g)
+        if cam == 'strike':
+            # Low by the spot, side on, for the super slow-motion strike
+            sx, sz = view['shooter']['pos']
+            return (sx + 2.6, 0.55, sz - 0.6), (sx * 0.5 + bx * 0.5, 0.45, (sz + bz) * 0.5 - 0.3)
+        if cam == 'goalline':
+            # The goal-line camera, level with the line, looking across it
+            glt = g.replay.get('glt') or {}
+            gx = (glt.get('ball') or (0.0, 0.0, 0.0))[0]
+            return (C.GOAL_HALF_WIDTH + 2.6, 1.5, C.GOAL_LINE_Z + 1.6), (gx, 0.9, C.GOAL_LINE_Z - 0.2)
+        if cam == 'spider':
+            # The spider cam on its wires, floating over the run-up
+            return (bx * 0.4 + 1.5, 9.5, bz + 7.5), (bx, by * 0.5, bz - 2.0)
         if cam == 'ball':
             # Riding just behind the ball all the way to the net
             return (bx + 1.4, by + 0.6, bz + 2.4), (bx * 0.5, 1.0, C.GOAL_LINE_Z)
@@ -54,11 +66,22 @@ def camera_eye(g, view):
         yaw = math.radians(view['shooter']['yaw'])
         fx, fz = -math.sin(yaw), -math.cos(yaw)          # the way he is facing
         return (sx + 1.35 * fx + 0.35, 1.75, sz + 1.35 * fz), (sx, 1.62, sz)
+    win = g.scene_env().get('win')
+    if win and g.camera == 'broadcast' and g.phase in ('result', 'ended'):
+        # The winning moment: the camera circles the celebrations
+        tx, tz = render._win_target(view, win)
+        a = math.radians(-55.0 + 110.0 * min(1.0, win['t'] / 7.0))      # sweeps round in front
+        dist = 6.5 - 1.5 * min(1.0, win['t'] / 4.0)
+        return (tx + dist * math.sin(a), 2.0 + 0.6 * math.sin(win['t'] * 0.5), tz + dist * math.cos(a)), (tx, 1.1, tz)
     if g.phase in ('walk', 'ritual') and g.camera == 'broadcast':
-        # Tracking shot behind the kicker on the long walk
+        # A steadicam walking behind the taker from halfway, bobbing with the
+        # operator's steps and drifting round to the side as they near the spot
         sx, sz = view['shooter']['pos']
         r = min(1.0, g.phase_t / WALK_TIME) if g.phase == 'walk' else 1.0
-        return (sx - 1.0, 2.2 - 0.3 * r, sz + 4.5), (sx * 0.3, 1.2, C.GOAL_LINE_Z)
+        bob = 0.035 * math.sin(g.clock * 9.0)
+        drift = 0.12 * math.sin(g.clock * 0.7)
+        return ((sx - 0.6 - 0.9 * r + drift, 1.85 - 0.25 * r + bob, sz + 3.6 - 0.6 * r),
+                (sx * 0.4, 1.35 - 0.2 * r, sz - 6.0))
     cam = g.camera
     if cam == 'keeper' and not g.is_human(g.keeper_side()):
         cam = 'broadcast'          # the keeper's eye view is for a human keeper
@@ -85,43 +108,120 @@ def camera_eye(g, view):
     return (0.0, 2.9 - 0.3 * push, C.SPOT_Z + 8.6 - push), (0.0, 0.9, C.GOAL_LINE_Z)
 
 
+def replay_camera(g):
+    """The replay camera in use: the director's cut, or the one picked with C."""
+    if g.replay_cam != 'auto' or not g.replay:
+        return g.replay_cam
+    return auto_camera(int(g.replay['t'] * 60.0), g.replay)
+
+
+def load_camera(eye, look, fov, aspect, near=0.05, far=250.0):
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(fov, aspect, near, far)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    gluLookAt(eye[0], eye[1], eye[2], look[0], look[1], look[2], 0, 1, 0)
+    gfx.set_view(eye, look, near, far)
+
+
 def setup_camera(g, view):
+    """Load the current camera. Returns the eye, the look-at point and the field of view."""
     w = max(1, glutGet(GLUT_WINDOW_WIDTH))
     h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
     glViewport(0, 0, w, h)
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
     fov = 70.0 if g.scene_env()['first_person'] else 50.0
-    gluPerspective(fov, w / float(h), 0.05, 250.0)
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
+    if g.phase == 'replay' and replay_camera(g) in ('strike', 'goalline'):
+        fov = 34.0                               # long lens
     eye, look = camera_eye(g, view)
     if g.shake > 0:
         amp = 0.12 * g.shake
         eye = (eye[0] + amp * math.sin(g.clock * 53.0), eye[1] + amp * math.cos(g.clock * 47.0), eye[2])
-    gluLookAt(eye[0], eye[1], eye[2], look[0], look[1], look[2], 0, 1, 0)
+    load_camera(eye, look, fov, w / float(h))
+    return eye, look, fov
+
+
+def _dist(a, b):
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def post_settings(g, view, env, eye, look, fov):
+    """Grading, bloom, depth of field, motion blur and filters for this frame."""
+    weather, daytime = env['weather'], env['daytime']
+    grade = weather if weather in ('rain', 'snow', 'fog') else (
+        'dusk' if daytime in ('dusk', 'sunset') else daytime)
+    lit = daytime == 'night' or (daytime == 'dusk' and env.get('dusk', 0.0) > 0.4)
+    post = dict(grade=grade, bloom=0.85 if lit else 0.4, vignette=0.32, time=g.clock, sat=1.0)
+    if g.phase == 'ritual' and g.camera == 'broadcast' and g.phase_t > 0.62 * g.ritual_len:
+        sx, sz = view['shooter']['pos']
+        post.update(focus=_dist(eye, (sx, 1.62, sz)), range=0.7)        # shallow focus on the face
+    elif g.phase == 'walk' and g.camera == 'broadcast':
+        sx, sz = view['shooter']['pos']
+        post.update(focus=_dist(eye, (sx, 1.4, sz)), range=3.5)
+    elif g.phase == 'replay' and replay_camera(g) == 'strike':
+        post.update(focus=_dist(eye, view['ball']), range=1.5)
+    if view.get('rocket') and g.phase == 'flight':
+        post['blur'] = 0.55
+    if g.phase == 'replay':
+        post['vignette'] = 0.5
+    if env.get('win') and g.phase in ('result', 'ended'):
+        post.update(sat=1.15, vignette=0.45)
+    if g.photo:
+        post['filter'] = g.photo_filter
+        if g.photo_dof:
+            post.update(focus=_dist(eye, look), range=4.0)
+        post['vignette'] = 0.4
+    w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    proj = gfx.perspective(fov, w / float(h), 0.05, 250.0)
+    view_m = gfx.look_at(eye, look)
+    haze = []
+    for p, strength in render.effects['haze'][:2]:
+        sp = gfx.project(p, proj, view_m)
+        if sp is not None and -0.2 < sp[0] < 1.2 and -0.2 < sp[1] < 1.2:
+            r = max(0.03, min(0.25, 1.4 / max(1.0, _dist(eye, p)) * 0.5))
+            haze.append((sp[0], sp[1], r, min(1.0, strength)))
+    post['haze'] = haze
+    return post
+
+
+def draw_big_screen_picture(g, env):
+    """High quality: draw the scene again from a TV camera into the big screen's picture."""
+    if C.VARIANT != 'stadium' or env.get('theme') not in ('classic', 'derby', 'arena') or not gfx.begin_screen():
+        return
+    sview, eye, look = g.screen_view()
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    load_camera(eye, look, 40.0, 16.0 / 9.0)
+    render.draw_scene(sview, None, g.clock, env, screen=True)
+    gfx.end_screen()
+    gfx.resume_frame()
+
+
+def _check_graphics(g):
+    """Rebuild the pipeline when the quality setting changes; say so if it fails."""
+    if g.gfx_request:
+        g.gfx_request = False
+        if not gfx.init(g.graphics):
+            g.toast = (f"Shaders unavailable, using low quality: {gfx.state['error']}", g.clock)
+        g.graphics = gfx.quality()
 
 
 def display_showcase(g):
     """The select and create screens: a character on a turntable, then the HUD."""
     w = max(1, glutGet(GLUT_WINDOW_WIDTH))
     h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
-    render.set_environment(g.daytime, 'clear')
+    daytime = g.daytime if g.daytime in ('night', 'day') else 'night'
+    render.prepare(dict(daytime=daytime, weather='clear'))
+    gfx.begin_frame(w, h)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glViewport(0, 0, w, h)
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    gluPerspective(40.0, w / float(h), 0.05, 250.0)
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
     eye_x = 1.9                             # the figure sits left of centre, the stats panel right
-    gluLookAt(eye_x, 1.35, C.SPOT_Z + 6.4, eye_x, 1.05, C.SPOT_Z, 0, 1, 0)
+    eye, look = (eye_x, 1.35, C.SPOT_Z + 6.4), (eye_x, 1.05, C.SPOT_Z)
+    load_camera(eye, look, 40.0, w / float(h))
     fig, keeper, cel = hud.showcase_subject(g)
-    if fig is not None:
-        kit = dict(C.KITS['p1'])
-        render.draw_showcase(fig, keeper, kit, g.clock, g.daytime, cel)
-    else:
-        render.draw_showcase(None, False, dict(C.KITS['p1']), g.clock, g.daytime)
+    kit = dict(C.KITS['p1'])
+    render.draw_showcase(fig, keeper if fig is not None else False, kit, g.clock, daytime, cel if fig else None)
+    gfx.end_frame(dict(grade=daytime, bloom=0.6, vignette=0.4, time=g.clock, focus=_dist(eye, look), range=2.5))
     hud.draw(g)
     glutSwapBuffers()
 
@@ -131,13 +231,26 @@ def display():
     if g.ui in ('select', 'create'):
         display_showcase(g)
         return
+    _check_graphics(g)
     view = g.current_view()
-    env = g.scene_env()
-    render.set_environment(env['daytime'], env['weather'])
+    w = max(1, glutGet(GLUT_WINDOW_WIDTH))
+    h = max(1, glutGet(GLUT_WINDOW_HEIGHT))
+    eye, look = camera_eye(g, view)
+    env = render.prepare(dict(g.scene_env(), eye=eye))
+    gfx.begin_frame(w, h)
+    if gfx.fancy():
+        gfx.render_shadows(render.light_dir(), lambda: render.draw_casters(view, env))
+        gfx.resume_frame()
+        if gfx.high() and gfx.state['frame'] % 2 == 0:
+            draw_big_screen_picture(g, env)
+        render.set_environment(env['daytime'], env['weather'], env['dusk'])
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    setup_camera(g, view)
+    eye, look, fov = setup_camera(g, view)
     aim = tuple(g.aim) if g.aim_visible() else None
     render.draw_scene(view, aim, g.clock, env)
+    gfx.end_frame(post_settings(g, view, env, eye, look, fov))
+    if g.photo:
+        hud.photo_decor(g)
     if g.photo_request:
         g.photo_request = False
         g.toast = (save_photo(), g.clock)
@@ -403,8 +516,11 @@ def main():
     glutCreateWindow(b'Penalty Shootout')
     render.init_gl()
     controls.load()
+    if not gfx.init(gfx.load_quality()):
+        print(f"Graphics: shaders unavailable, using low quality ({gfx.state['error']})")
     added = scenarios.load_mods(teams=C.TEAMS)
     game = Game(audio=Audio())
+    game.graphics = gfx.quality()
     if added:
         game.toast = (f'Loaded {added} mod item(s) from {scenarios.MOD_DIR}', 0.0)
     if not game.stats['tutorial_done'] and not (args.replay or args.duel or args.host is not None or args.join):

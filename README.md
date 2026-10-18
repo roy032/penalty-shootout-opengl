@@ -70,6 +70,23 @@ Set **Characters** in the menu to *Club* (generated squads), *Legends* (drafted 
 - **Referees, managers and teammates.** Each match gets a referee with their own tolerance for antics, time-wasting and taunts, shown at the toss. Managers watch from the touchline, the captain has a word before big kicks, and the line on halfway is the real bench.
 - **Commentary and form.** Lines for each character, personality and celebration, keeper banter that remembers earlier kicks, and form that rises with scored fifth kicks and dips with misses, fading over a few games.
 
+## Graphics
+
+Set **Graphics** in the menu to *Low*, *Medium* or *High* (saved in `~/.penalty_shootout/graphics.json`). Low is the classic fixed-function look and runs anywhere. Medium and High draw through GLSL shaders, and if the shaders or framebuffers are not available the game drops back to Low and says why.
+
+- **Lighting and shadows.** Per-pixel lighting with a sky-and-grass ambient, specular highlights on boots, the ball, the frame and wet grass, a broadcast rim light on the players, and shadow maps from the sun or the main floodlight (four soft floodlight shadows at night).
+- **Anti-aliasing and post-processing.** A multisampled frame, then bloom round the floodlights, LEDs and auras, a vignette, colour grading per weather and time of day, depth of field on the taker's close-up and on the walk, motion blur on a rocket, and heat haze round the strongest auras (High).
+- **The pitch.** Procedural grass with mower stripes that change with the viewing angle, a worn goalmouth and a penalty spot that gets churned up kick after kick, divots kicked up by a slip, and grass blades round the spot and the goal.
+- **Stadiums.** Choose the *Classic bowl*, *Derby night* (flare smoke drifting through the beams), *Old terraces* (pylons and a hand-turned scoreboard), *Future arena* (an LED ribbon and a roof that slides shut in rain and snow) or *Nordic winter*. Two-tier stands with roofs, a tunnel and dugouts, corner flags in the wind, LED boards that scroll and flash GOAL! in the scorer's colours, and a big screen that shows the live picture and replays (High). For a *Golden sunset* beach, pick the beach pitch with the sunset kick-off.
+- **The crowd.** Scarves held up, the home end on its feet for the decisive kick, phone flashes popping round the ground on big kicks, and the away end emptying after a defeat.
+- **Players.** Rounded, tapered bodies with sleeves, collars, knees and elbows that bend, shirts that flap and hair that swings. Poses blend into each other: the strike follows through, the plant foot sticks, and a full-stretch dive lands and rolls. Kits and gloves pick up mud from slips, dives and the rain.
+- **Ball and net.** Panels in the tournament design and the taker's colours, a visible knuckleball wobble, scuffs after it hits the woodwork, a light trail on a rocket, and a cloth net that ripples round the ball and sags in the rain.
+- **Weather and light.** Rain splashes off the pitch and the players, puddles that mirror the lights, spray behind a skidding ball and drips off the bar; snow that settles over the match and keeps the footprints. Kick off at *Dusk into night* and the sky darkens over the shootout while the floodlights come on bank by bank, with beams visible in fog and drizzle.
+- **Broadcast.** A steadicam walk from halfway, an animated score bug and player cards, shot speed and xG with a heatmap of the match's kicks, and replays cut like TV: spider cam over the run-up, a super slow-motion strike, the net cam, and goal-line technology with a 3D graphic for tight calls (`C` picks a camera, or leave it on the director's cut).
+- **The winning kick.** Slow motion, the camera circling the hero, confetti and fireworks, and the bench sprinting on to pile on.
+- **Photo mode extras.** `F` filters (mono, sepia, vivid, vintage, noir), `G` depth of field, `B` a poster frame and `T` the hero's name stamped on the picture.
+- **Auras.** Light pooling on the grass, sparks with trails, heat haze for the strongest, and a gold shimmer for legends on the walk.
+
 ## How to Run
 
 Requires Python 3.8+ and an OpenGL-capable system with GLUT (freeglut).
@@ -114,12 +131,12 @@ When keeping, left and right pick the dive, down stays in the centre and up togg
 
 | Key | Action |
 |-----|--------|
-| `C` | Change camera (in a replay: net, ball or side camera) |
+| `C` | Change camera (in a replay: director's cut, net, ball, side, goal-line or spider cam) |
 | `T` | Trajectory preview on/off (training) |
 | `H` | How to play |
 | `N` | Sound on / off |
 | `P` | Pause (then `R` restart, `M` menu) |
-| `Y` | Photo mode (`A`/`D` orbit, `W`/`S` height, `Q`/`E` zoom, `Enter` save) |
+| `Y` | Photo mode (`A`/`D` orbit, `W`/`S` height, `Q`/`E` zoom, `F` filter, `G` focus, `B` frame, `T` name, `Enter` save) |
 | `V` / `F` / `G` | After the match: watch the replay, save a replay file, save a GIF clip |
 | `B` / `Tab` | After the match: share (ghost duel file, and the daily grid to the clipboard) / coach's report |
 | `Esc` | Quit |
@@ -179,11 +196,14 @@ A list of `players` adds characters to the select screen under *Yours and mods*:
 │   ├── controls.py         # Key bindings (rebindable, saved to a file)
 │   ├── audio.py            # Procedural sound effects
 │   ├── stats.py            # Career stats and the training heatmap
-│   ├── render.py           # 3D scene, crowd and weather
+│   ├── render.py           # 3D scene: players, ball, net, crowd, weather and effects
+│   ├── gfx.py              # Shaders, shadows, anti-aliasing, post-processing, quality setting
+│   ├── stadium.py          # The grounds: stands, roofs, LED boards, big screen, floodlights
+│   ├── prims.py            # Drawing primitives (rounded limbs, discs, boxes)
 │   ├── hud.py              # Scoreboard, menus, banners, captions
 │   ├── gamepad.py          # Gamepads and rumble (optional, via pygame)
 │   ├── phone.py            # Phone controller web page (optional)
-│   └── app.py              # GLUT window, cameras, clip export
+│   └── app.py              # GLUT window, cameras, the frame pipeline, clip export
 ├── penalty_shootout.spec   # PyInstaller recipe for the Windows build
 ├── tests/                  # pytest suite (runs without a display)
 └── tools/balance.py        # Conversion-rate simulation

@@ -7,7 +7,8 @@ import os
 import random
 import time
 
-from . import achievements, ai, characters as CH, commentary, config as C, physics, report, squad as S, stats, winprob
+from . import (achievements, ai, characters as CH, commentary, config as C, gfx, physics, report, squad as S, stadium,
+               stats, winprob)
 from .controls import CONTROLS
 from .keeper import Keeper
 from .kick import Kick
@@ -20,7 +21,11 @@ from .scenarios import SCENARIOS, really_lost
 WALK_TIME = 3.6
 RITUAL_TIME = 1.2          # placing the ball after the walk, before the whistle
 CAMERAS = ['broadcast', 'goal', 'side', 'keeper', 'orbit']
-REPLAY_CAMERAS = ['net', 'ball', 'side']
+REPLAY_CAMERAS = ['auto', 'net', 'ball', 'side', 'goalline', 'spider']
+DAYTIMES = ['night', 'day', 'dusk', 'sunset']
+DUSK_TIME = 150.0          # seconds of a dusk match until the sky is fully dark
+ROCKET_SPEED = 27.0        # m/s: shots this hard get motion blur and a light trail
+GLT_TIGHT = 0.3            # metres either side of the line that count as a tight call
 READ_WINDOW = 0.22   # seconds after contact a keeper who has not guessed can still react
 SHUFFLE_STEPS = [0.0, -0.35, 0.35]
 CELEBRATIONS = ['knee slide', 'aeroplane', 'shush', 'badge kiss']
@@ -113,6 +118,68 @@ def demo_ghost():
                                                          keeper=(0.2, 0.2, 0.25)), kicks=kicks, score=None)
 
 
+def shot_xg(target, keeper_x=0.0, speed=20.0):
+    """A rough expected-goals figure for a penalty aimed at target (x, y on
+    the goal line): corners and pace beat the keeper, the middle is a coin flip."""
+    x, y = target
+    hw, h = C.GOAL_HALF_WIDTH, C.GOAL_HEIGHT
+    if abs(x) > hw - C.BALL_RADIUS * 0.5 or y > h - C.BALL_RADIUS * 0.5 or y < 0.0:
+        return 0.02                                   # aimed off target
+    wide = min(1.0, abs(x - keeper_x) / hw)
+    high = min(1.0, y / h)
+    corner = wide * (0.55 + 0.45 * high)
+    pace = max(0.0, min(1.0, (speed - 14.0) / 16.0))
+    return round(max(0.3, min(0.97, 0.52 + 0.33 * corner + 0.12 * pace)), 2)
+
+
+def goal_line_call(frames):
+    """Goal-line technology: the frame where the ball got deepest towards (or
+    over) the line between the posts, how far it was from being wholly over
+    (negative: over by that much), and whether the call was tight."""
+    best = None
+    for i, f in enumerate(frames):
+        x, y, z = f['ball']
+        if abs(x) > C.GOAL_HALF_WIDTH or y > C.GOAL_HEIGHT + C.BALL_RADIUS or z > C.GOAL_LINE_Z + 1.5:
+            continue
+        if best is None or z < best[1][2]:
+            best = (i, (x, y, z))
+    if best is None:
+        return None
+    i, pos = best
+    gap = (pos[2] + C.BALL_RADIUS) - C.GOAL_LINE_Z    # > 0: part of the ball is still on the line
+    return dict(frame=i, ball=pos, gap=round(gap, 3), goal=gap < 0.0, tight=abs(gap) < GLT_TIGHT)
+
+
+def replay_speed(i, replay):
+    """Super slow motion round the strike and the big moments, quicker between."""
+    contact = replay.get('contact')
+    if contact is not None and -6 <= i - contact <= 14:
+        return 0.06
+    if any(abs(i - e) < 10 for e in replay.get('events', ())):
+        return 0.1
+    glt = replay.get('glt')
+    if glt and glt['tight'] and abs(i - glt['frame']) < 8:
+        return 0.08
+    return 0.35
+
+
+def auto_camera(i, replay):
+    """The director's cut of a replay: spider cam over the run-up, a low
+    close-up on the strike, the reverse angle from the net, and the
+    goal-line camera to finish a tight call."""
+    contact = replay.get('contact')
+    glt = replay.get('glt')
+    if glt and glt['tight'] and i >= glt['frame'] - 4:
+        return 'goalline'
+    if contact is None:
+        return 'net'
+    if i < contact - 6:
+        return 'spider'
+    if i < contact + 14:
+        return 'strike'
+    return 'net'
+
+
 class Game:
     def __init__(self, audio=None, rng=None, stats_path=stats.PATH):
         self.rng = rng or random.Random()
@@ -138,6 +205,9 @@ class Game:
         self.variant = 'stadium'
         self.weather = 'clear'
         self.daytime = 'night'
+        self.stadium = 'classic'
+        self.graphics = gfx.load_quality()
+        self.gfx_request = False           # the app rebuilds the graphics pipeline
         self.assist = 'off'
         self.commentary = 'text'
         self.speaker = None
@@ -164,11 +234,17 @@ class Game:
         self.photo = False
         self.photo_cam = [30.0, 1.4, 4.5]  # angle (deg), height, distance around the ball
         self.photo_request = False         # the app saves a PNG without the HUD
+        self.photo_filter = 'none'
+        self.photo_dof = True
+        self.photo_frame = False
+        self.photo_stamp = True
         self.daily_file = DAILY_FILE
         self.duel_dir = DUEL_DIR
         self.clipboard_request = None      # text the app puts on the clipboard
         self.camera = 'broadcast'
-        self.replay_cam = 'net'
+        self.replay_cam = 'auto'
+        self.match_id = 0
+        self.match_clock = 0.0
         self.orbit = [0.0, 3.0, 9.0]          # angle (deg), height, distance
         self.shake = 0.0
         self.held = set()
@@ -208,7 +284,9 @@ class Game:
             rows.append('ghost')
         if m not in ('famous', 'tutorial'):
             rows.append('variant')
-        rows += ['weather', 'daytime', 'assist', 'commentary', 'captions', 'phone', 'start']
+            if self.variant == 'stadium':
+                rows.append('stadium')
+        rows += ['weather', 'daytime', 'graphics', 'assist', 'commentary', 'captions', 'phone', 'start']
         return rows
 
     def sweet(self):
@@ -431,6 +509,13 @@ class Game:
         self.daily_grid = None
         self.ref = random.Random(self.squad_seed + 7).choice(REFEREES)
         self.story_beat = self.comp.story() if isinstance(self.comp, CareerComp) else None
+        self.match_id += 1
+        self.match_clock = 0.0
+        self.finish_clock = None
+        self.goal_flash = None
+        self.wood_hit = None
+        self.shot_speed = 0.0
+        self.shot_xg = None
         self._reset_tie()
 
     def _reset_tie(self):
@@ -587,6 +672,10 @@ class Game:
         self.result = None
         self.recording = []
         self.net_hit = None
+        self.goal_flash = None
+        self.wood_hit = None
+        self.shot_speed = 0.0
+        self.shot_xg = None
         self.runup = 'angled'
         self.gaze = None
         self.shuffle_i = 0
@@ -831,7 +920,10 @@ class Game:
     # ----------------------------------------------------------------- update
     def update(self, dt):
         """Advance the game by dt seconds of real time."""
+        dt *= self.time_scale()
         self.clock += dt
+        if self.ui == 'playing' and not self.paused:
+            self.match_clock += dt
         self.shake = max(0.0, self.shake - dt)
         if self.ui != 'playing' or self.paused or self.photo:
             self._accum = 0.0
@@ -898,8 +990,7 @@ class Game:
         elif ph == 'replay':
             frames = self.replay['frames']
             i = int(self.replay['t'] * 60.0)
-            slow = any(abs(i - e) < 10 for e in self.replay['events'])
-            self.replay['t'] += dt * (0.1 if slow else 0.35)
+            self.replay['t'] += dt * replay_speed(i, self.replay)
             if self.replay['t'] * 60.0 >= len(frames) + 30:
                 self.phase = 'ended'
                 self.phase_t = 0.0
@@ -1171,6 +1262,8 @@ class Game:
         self.phase = 'flight'
         self.phase_t = 0.0
         self.contact_t = 0.0
+        self.shot_speed = math.sqrt(sum(v * v for v in self.ball.vel))
+        self.shot_xg = shot_xg(shot['target'], self.keeper.x0, self.shot_speed)
         self._commit_at_contact = (self.keeper.dir, self.keeper.high,
                                    (self.keeper.delay if self.keeper.t is None else -self.keeper.t)) \
             if self.keeper.committed() else None
@@ -1246,6 +1339,7 @@ class Game:
             if ev in ('post', 'bar'):
                 self._play('post')
                 self.shake = 0.45
+                self.wood_hit = (self.ball.pos[0], self.ball.pos[1], self.clock)
             elif ev == 'goal':
                 self._play('roar')
                 self.shake = max(self.shake, 0.25)
@@ -1304,7 +1398,10 @@ class Game:
         self.comp.record(self.kicker, hit)
         if self.player is not None:
             self.player.kicks += 1
+        if self.comp.finished and self.finish_clock is None:
+            self.finish_clock = self.clock
         if scored:
+            self.goal_flash = (self.comp.kit(self.kicker)['shirt'], self.clock)
             self.nerves[self.kicker] = max(-0.1, self.nerves[self.kicker] - 0.06)
             self.keeper_conf[ks] = 0
             self.celebration = self.rng.choice(CELEBRATIONS)
@@ -1602,7 +1699,8 @@ class Game:
             return
         frames = list(self.recording)
         events = [i for i, f in enumerate(frames) if f.get('ev')]
-        self.replay = dict(frames=frames, t=0.0, events=events[:3])
+        contact = next((i for i, f in enumerate(frames) if f['shooter'].get('kick', 0.0) > 0.0), None)
+        self.replay = dict(frames=frames, t=0.0, events=events[:3], contact=contact, glt=goal_line_call(frames))
         self.phase = 'replay'
         self.phase_t = 0.0
         self._loops(False)
@@ -1834,6 +1932,7 @@ class Game:
             state['pos'] = (px, pz)
             t = self.contact_t or 0.0
             state['kick'] = min(1.0, t / 0.18) if t < 0.5 else max(0.0, 1.0 - (t - 0.5) * 3)
+            state['follow'] = t
             if self.slipped and t < 1.5:
                 state['mood'] = 'slip'
             elif self.result is not None:
@@ -1915,6 +2014,9 @@ class Game:
             ball = (com[0] + 0.25, com[1] + 0.2, com[2] + 0.2)     # tucked under the keeper's arm
         return dict(
             ball=ball, spin=(tuple(self.ball.spin_axis), self.ball.spin_angle),
+            wobble=self.ball.knuckle * math.sin(self.ball.flight_t * 13.0) if self.phase == 'flight' else 0.0,
+            rocket=self.phase in ('flight', 'result') and self.shot_speed > ROCKET_SPEED,
+            scuff=1.0 if self.wood_hit else 0.0,
             keeper=(com, lean, arms), keeper_mood=keeper_mood, shooter=self.shooter_view(),
             keeper_point=self.keeper.point_dir, keeper_scale=self.keeper_scale,
             no_keeper=getattr(self.comp, 'no_keeper', False),
@@ -1930,12 +2032,23 @@ class Game:
             bench=self.bench_view(), captain=self.captain_view(),
         )
 
+    def screen_view(self):
+        """The big screen's picture: the last kick again from behind the net
+        once it is over, otherwise the wide TV shot. (view, eye, look)."""
+        frames = self.recording
+        if self.phase in ('result', 'ended', 'interlude') and frames:
+            i = int(self.clock * 24.0) % (len(frames) + 30)
+            return frames[min(i, len(frames) - 1)], (4.5, 2.3, C.GOAL_LINE_Z - 6.5), (0.0, 1.0, C.GOAL_LINE_Z + 4.0)
+        return self.current_view(), (-9.0, 7.0, C.SPOT_Z + 16.0), (0.0, 1.0, C.GOAL_LINE_Z + 2.0)
+
     def crowd_state(self):
         """What the fans behind the goal are doing."""
         if self.phase in ('toss', 'intro', 'interlude'):
             return 'wave'
         if self.phase in ('walk', 'ritual', 'aim', 'runup') and self.end_fans != self.kicker:
             return 'jeer'
+        if self.phase in ('walk', 'ritual', 'aim', 'runup') and self.stakes is not None:
+            return 'stand'                      # on their feet for the big one
         if self.phase == 'result' and self.result:
             fans_happy = self.result[0] == (self.kicker == self.end_fans)
             return 'roar' if fans_happy else 'calm'
@@ -1954,7 +2067,80 @@ class Game:
             bins=BINS if isinstance(self.comp, ChallengeComp) and self.comp.kind == 'bins' else None,
             first_person=(self.camera == 'keeper' and self.phase != 'replay' and self.is_human(ks)
                           and not self.photo),
-            kits=self.comp.kits, managers=isinstance(self.comp, (ShootoutComp, Knockout)))
+            kits=self.comp.kits, managers=isinstance(self.comp, (ShootoutComp, Knockout)),
+            **self.graphics_env())
+
+    def time_scale(self):
+        """The winning kick plays out in slow motion."""
+        if self.ui == 'playing' and self.phase == 'result' and getattr(self, 'finish_clock', None) is not None \
+                and self.phase_t < 1.2 and self.playback is None:
+            return 0.3
+        return 1.0
+
+    def dusk(self):
+        """0..1 through the evening, for a match that kicks off at dusk."""
+        return min(1.0, self.match_clock / DUSK_TIME) if self.daytime == 'dusk' else 0.0
+
+    def hero_name(self):
+        """Who the photo is of: the keeper when a save or a miss won it, else the taker."""
+        win = self.graphics_env()['win'] if self.comp.finished else None
+        if win and win['on'] == 'keeper':
+            kp = self.comp.keeper_player(self.keeper_side())
+            if kp is not None:
+                return kp.name
+        return self.taker_name()
+
+    def screen_info(self):
+        """What the big screen shows: the score, the clock and a banner."""
+        rows = self.comp.rows() if hasattr(self.comp, 'rows') else []
+        if len(rows) == 2:
+            score = f"{rows[0]['name'][:3].upper()} {rows[0]['goals']} - {rows[1]['goals']} {rows[1]['name'][:3].upper()}"
+        else:
+            score = 'PENALTIES'
+        banner = None
+        if self.result is not None and self.phase in ('result', 'replay'):
+            banner = 'GOAL!' if self.result[0] else self.result[1].upper()[:14]
+        elif self.stakes and self.phase in ('walk', 'ritual', 'aim', 'runup'):
+            banner = 'TO WIN IT' if self.stakes == 'to_win' else 'MUST SCORE'
+        if self.comp.finished and self.phase == 'ended':
+            banner = 'CHAMPIONS'
+        mins = 120 + min(9, int(self.match_clock // 60))
+        return dict(score=score, banner=banner, clock=f"120+{mins - 120}'" if mins > 120 else "120'")
+
+    def graphics_env(self):
+        """The renderer's extras: the ground, the time of day, the big screen,
+        the crowd's mood and the big moments."""
+        rows_flash = None
+        if self.goal_flash and self.clock - self.goal_flash[1] < 4.0:
+            rows_flash = (self.goal_flash[0], self.clock - self.goal_flash[1])
+        finished = self.comp.finished and getattr(self, 'finish_clock', None) is not None
+        leaving = 0.0
+        if finished and self.phase == 'ended' and self.comp.winner and self.comp.winner != self.end_fans:
+            leaving = max(0.0, min(0.75, (self.clock - self.finish_clock - 8.0) / 25.0))
+        win = None
+        if finished and self.phase in ('result', 'ended') and self.comp.winner:
+            last_scored = bool(self.result and self.result[0])
+            scorer_won = last_scored == (self.comp.winner == self.kicker)
+            win = dict(t=self.clock - self.finish_clock, side=self.comp.winner,
+                       colour=self.comp.kit(self.comp.winner)['shirt'],
+                       on='kicker' if (last_scored and scorer_won) else 'keeper')
+        glt = None
+        if self.phase == 'replay' and self.replay and self.replay.get('glt'):
+            g = self.replay['glt']
+            if g['tight'] and self.replay['t'] * 60.0 >= g['frame']:
+                glt = g
+        big_kick = self.stakes is not None and self.phase in ('walk', 'ritual', 'aim', 'runup', 'flight')
+        wood = self.wood_hit if self.wood_hit and self.clock - self.wood_hit[2] < 8.0 else None
+        return dict(
+            theme=self.stadium if C.VARIANT == 'stadium' else 'classic',
+            dusk=self.dusk(), match=self.match_id, wear=min(1.0, 0.2 + 0.07 * self.spot_wear),
+            snow=min(1.0, 0.25 + self.match_clock / 240.0) if self.weather == 'snow' else 0.0,
+            wet=1.0 if self.weather == 'rain' else 0.0,
+            flash=rows_flash, screen=self.screen_info() if self.ui == 'playing' else None, leaving=leaving,
+            stand=big_kick and self.phase != 'flight',
+            phones=big_kick, win=win, glt=glt, wood=wood,
+            roof=min(1.0, self.match_clock / 25.0) if self.weather in ('rain', 'snow') else 0.0,
+            team_colours={s: self.comp.kit(s)['shirt'] for s in ('p1', 'p2')})
 
     def current_view(self):
         if self.phase == 'replay' and self.replay:
@@ -2081,6 +2267,15 @@ class Game:
             cam[2] = max(1.2, min(30.0, cam[2] + (0.5 if key == 'e' else -0.5)))
         elif key in ('\r', ' '):
             self.photo_request = True
+        elif key == 'f':
+            self.photo_filter = gfx.PHOTO_FILTERS[(gfx.PHOTO_FILTERS.index(self.photo_filter) + 1)
+                                                  % len(gfx.PHOTO_FILTERS)]
+        elif key == 'g':
+            self.photo_dof = not self.photo_dof
+        elif key == 'b':
+            self.photo_frame = not self.photo_frame
+        elif key == 't':
+            self.photo_stamp = not self.photo_stamp
 
     def key_up(self, key):
         self.held.discard(key)
@@ -2514,7 +2709,13 @@ class Game:
         elif row == 'weather':
             self.weather = cycle(C.WEATHER_ORDER, self.weather)
         elif row == 'daytime':
-            self.daytime = cycle(['night', 'day'], self.daytime)
+            self.daytime = cycle(DAYTIMES, self.daytime)
+        elif row == 'stadium':
+            self.stadium = cycle(stadium.THEMES, self.stadium)
+        elif row == 'graphics':
+            self.graphics = cycle(gfx.QUALITIES, self.graphics)
+            gfx.save_quality(self.graphics)
+            self.gfx_request = True
         elif row == 'assist':
             self.assist = cycle(['off', 'relaxed'], self.assist)
         elif row == 'commentary':

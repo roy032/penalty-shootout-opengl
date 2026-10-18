@@ -9,7 +9,7 @@ from OpenGL.GL import *  # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
 from OpenGL.GLUT import *  # noqa: F401,F403
 
-from . import achievements, characters as CH, config as C, controls, stats
+from . import achievements, characters as CH, config as C, controls, gfx, stadium, stats
 from .controls import CONTROLS
 from .game import DRILL_ZONES, MODE_LABELS
 from .modes import (CAREER_TRAITS, CAREER_XP, CHALLENGES, ROUND_NAMES, ChallengeComp, KingOfTheGoal,
@@ -198,7 +198,7 @@ def scoreboard(g):
     rows = comp.rows()
     x, w = 300, 400
     h = 30 + 32 * len(rows)
-    y = 792 - h
+    y = 792 - h + slide_offset(g, h + 30)
     rect(x, y, w, h, (0.07, 0.08, 0.12), 0.88)
     rect(x, y + h - 5, w, 5, GOLD)
     for i, r in enumerate(rows):
@@ -221,7 +221,12 @@ def scoreboard(g):
                 circle(px, ry + 5, min(7.0, step * 0.36), GREY)
         for k, res in enumerate(results[n:][-5:]):
             mark(x + 135 + n * step + 10 + k * 17, ry + 5, 6, res)
-        text(x + w - 18, ry - 2, str(r['goals']), MEDIUM, GOLD, 'right')
+        flash = getattr(g, 'goal_flash', None)
+        if flash and g.kicker == slot and g.clock - flash[1] < 1.5:
+            pulse = 1.0 + 0.6 * math.sin(min(1.0, (g.clock - flash[1]) / 1.5) * math.pi)
+            big_text(x + w - 24, ry - 2, str(r['goals']), 16 * pulse, GOLD, 2.5, False)
+        else:
+            text(x + w - 18, ry - 2, str(r['goals']), MEDIUM, GOLD, 'right')
         if g.phase in ('walk', 'aim', 'runup', 'flight') and g.kicker == slot:
             circle(x + w - 40, ry + 5, 4, GOLD)
     text(x + w / 2, y + 6, _match_label(g), SMALL, (0.8, 0.8, 0.85), 'center')
@@ -568,17 +573,81 @@ def banners(g):
         scored, label = g.result
         rect(0, 380, W, 80, (0, 0, 0), 0.5)
         big_text(500, 405, label, 40 if len(label) < 18 else 26, GREEN if scored else RED)
+        shot_panel(g)
     if g.card:
         colour, msg, _ = g.card
         rect(470, 470, 26, 36, GOLD if colour == 'yellow' else RED)
         text(506, 482, msg, MEDIUM, WHITE)
     if g.phase == 'replay':
         circle(40, 760, 8, RED)
-        text(56, 754, f'REPLAY  (SPACE skip, C camera: {g.replay_cam})', MEDIUM, WHITE)
+        cam = REPLAY_CAM_NAMES.get(g.replay_cam, g.replay_cam)
+        text(56, 754, f'REPLAY  (SPACE skip, C camera: {cam})', MEDIUM, WHITE)
+        glt_panel(g)
         if g.comp.finished:
             big_text(500, 640, 'THE DECISIVE KICK', 26, GOLD, 3)
         if g.export_request:
             text(56, 730, 'Recording clip...', SMALL, RED)
+
+
+REPLAY_CAM_NAMES = {'auto': "director's cut", 'net': 'net cam', 'ball': 'ball cam', 'side': 'side',
+                    'goalline': 'goal-line cam', 'spider': 'spider cam'}
+
+
+def slide_offset(g, distance):
+    """The score bug drops in at the start of each kick."""
+    if g.phase == 'walk' and g.phase_t < 0.5:
+        r = g.phase_t / 0.5
+        return (1.0 - r * r * (3 - 2 * r)) * distance
+    return 0.0
+
+
+def shot_panel(g):
+    """Broadcast readout after a kick: shot speed, xG and where this match's kicks went."""
+    t = g.phase_t
+    if t < 0.4 or not getattr(g, 'shot_speed', 0.0):
+        return
+    r = min(1.0, (t - 0.4) / 0.3)
+    x = W - 230 + (1.0 - r) * 260
+    rect(x, 120, 210, 66, (0.04, 0.05, 0.1), 0.88)
+    rect(x, 182, 210, 4, g.comp.kit(g.kicker)['shirt'])
+    text(x + 12, 160, 'SHOT SPEED', SMALL, (0.8, 0.8, 0.85))
+    text(x + 198, 158, f'{g.shot_speed * 3.6:.0f} km/h', MEDIUM, WHITE, 'right')
+    if g.shot_xg is not None:
+        text(x + 12, 132, 'xG', SMALL, (0.8, 0.8, 0.85))
+        text(x + 198, 130, f'{g.shot_xg:.2f}', MEDIUM, GOLD, 'right')
+    if g.log:
+        _heatmap(x + 30, 196, 150, None, g.log[-12:])
+
+
+def glt_panel(g):
+    """Goal-line technology verdict on a tight call."""
+    glt = g.replay.get('glt') if g.replay else None
+    if not glt or not glt['tight'] or g.replay['t'] * 60.0 < glt['frame']:
+        return
+    goal = glt['goal']
+    cm = abs(glt['gap']) * 100.0
+    rect(320, 470, 360, 76, (0.02, 0.04, 0.1), 0.9)
+    rect(320, 542, 360, 4, GREEN if goal else RED)
+    text(500, 524, 'GOAL-LINE TECHNOLOGY', SMALL, (0.7, 0.85, 1.0), 'center')
+    big_text(500, 494, 'GOAL' if goal else 'NO GOAL', 26, GREEN if goal else RED, 3)
+    what = f'wholly over by {cm:.0f} cm' if goal else f'{cm:.0f} cm short of being over'
+    text(500, 476, what, SMALL, WHITE, 'center')
+
+
+def photo_decor(g):
+    """Photo mode: a poster frame and the scorer's name, saved with the picture."""
+    if not (g.photo_frame or g.photo_stamp):
+        return
+    begin()
+    if g.photo_frame:
+        for (x, y, w, h) in ((0, 0, W, 26), (0, H - 26, W, 26), (0, 0, 26, H), (W - 26, 0, 26, H)):
+            rect(x, y, w, h, (0.97, 0.96, 0.92), 1.0)
+        outline(34, 34, W - 68, H - 68, GOLD, 2.0)
+    if g.photo_stamp:
+        name = g.hero_name()
+        big_text(W - 230, 74, name.upper()[:18], 30, WHITE, 3.5)
+        text(W - 230, 50, g.screen_info()['score'], SMALL, GOLD, 'center')
+    end()
 
 
 def lower_third(g):
@@ -587,6 +656,9 @@ def lower_third(g):
     if not info:
         return
     x, y, w, h = 40, 200, 430, 92
+    if g.phase == 'walk':
+        r = min(1.0, g.phase_t / 0.45)
+        x -= (1.0 - r * r * (3 - 2 * r)) * (w + 60)          # slides in from the side
     extra = [s for s in (info.get('full'), info.get('tag')) if s]
     traits = [s for s in (info.get('persona'), info.get('signature')) if s]
     if extra or traits:
@@ -882,7 +954,7 @@ MENU_LABELS = {
     'weather': 'Weather', 'daytime': 'Kick-off', 'assist': 'Assist', 'captions': 'Sound captions',
     'phone': 'Phone controller', 'start': '', 'order': 'Kick order', 'team1': 'Your team', 'team2': 'Opponents',
     'challenge': 'Challenge', 'ghost': 'Ghost', 'variant': 'Pitch', 'commentary': 'Commentary',
-    'squads': 'Characters',
+    'squads': 'Characters', 'stadium': 'Stadium', 'graphics': 'Graphics',
 }
 MODE_NAMES = {'pvc': 'Player v CPU', 'pvp': 'Player v Player', 'famous': 'Famous shootouts',
               'match': "90th-minute penalty", 'party': 'Party (3-8 friends)', 'training': 'Training ground',
@@ -928,7 +1000,13 @@ def menu_value(g, row):
     if row == 'weather':
         return C.WEATHER[g.weather]['label']
     if row == 'daytime':
-        return 'Night, floodlights' if g.daytime == 'night' else 'Afternoon sun'
+        return {'night': 'Night, floodlights', 'day': 'Afternoon sun', 'dusk': 'Dusk into night',
+                'sunset': 'Golden sunset'}[g.daytime]
+    if row == 'stadium':
+        return stadium.THEME_LABELS[g.stadium]
+    if row == 'graphics':
+        label = gfx.QUALITY_LABELS[g.graphics]
+        return label + ('  (shaders unavailable)' if gfx.state.get('error') and g.graphics == 'low' else '')
     if row == 'assist':
         return 'Relaxed timing' if g.assist == 'relaxed' else 'Off'
     if row == 'captions':
@@ -1065,7 +1143,10 @@ def draw(g):
         if g.show_achievements:
             achievements_overlay(g)
     elif g.photo:
-        text(500, 20, 'PHOTO MODE: A/D orbit, W/S height, Q/E zoom, ENTER save, Y exit', SMALL, WHITE, 'center')
+        text(500, 34, 'PHOTO MODE: A/D orbit, W/S height, Q/E zoom, ENTER save, Y exit', SMALL, WHITE, 'center')
+        on = {True: 'on', False: 'off'}
+        text(500, 16, f'F filter: {g.photo_filter}   G focus: {on[g.photo_dof]}   B frame: {on[g.photo_frame]}'
+                      f'   T name: {on[g.photo_stamp]}', SMALL, GOLD, 'center')
     else:
         scoreboard(g)
         wind_gauge(g)
