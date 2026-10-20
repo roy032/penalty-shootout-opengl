@@ -208,3 +208,46 @@ def test_a_side_is_never_sent_down_below_the_minimum():
         m._foul(p, victim, severity=0.9)
     assert len(t.active()) == m.min_players() == 3
     assert m._kickoff_taker(t) is not None
+
+
+def test_guides_show_the_pass_target_and_the_next_switch():
+    m, c, p, a = human_match()
+    mate = c.team.players[3]
+    mate.pos = [a * 8.0, 0.5]
+    m.ball.place(a * 0.5, 0.0)
+    m.ball.owner = p
+    c.move = (float(a), 0.0)
+    g = m.guide(c)
+    assert g['pass_to'] is mate
+    assert g['through'] is not None and g['through'][0] is mate
+    assert g['switch'] is None
+    # Defending: the guide names the team-mate a switch would pick
+    o = c.team.opp.players[2]
+    m.ball.owner = o
+    o.pos = [a * 9.0, 0.5]
+    m.ball.place(o.pos[0], o.pos[1])
+    g = m.guide(c)
+    assert g['pass_to'] is None and g['switch'] is m.switch_target(c, (0.0, 0.0))
+
+
+def test_offside_guide_only_on_authentic_full_pitches():
+    m, c, p, a = human_match()
+    m.ball.place(a * 0.5, 0.0)
+    m.ball.owner = p
+    assert m.guide(c)['offside'] is None
+    m = Match('stars', 'legends', settings=dict(size=11, pitch='full', preset='authentic'), humans=((0, 0),),
+              seed=2)
+    m.state = 'play'
+    m.restart = None
+    c = m.controllers[0]
+    p = c.team.players[6]
+    c.player = p
+    a = c.team.attack
+    p.pos = [a * 5.0, 0.0]
+    m.ball.place(p.pos[0] + a * 0.5, 0.0)
+    m.ball.owner = p
+    for i, o in enumerate(c.team.opp.active()):
+        o.pos = [a * (50.0 if o.keeper else 20.0 + i * 0.1), o.pos[1]]
+    c.team.players[9].pos = [a * 18.0, 2.0]
+    line = m.guide(c)['offside']
+    assert line is not None and abs(line * a - sorted((o.pos[0] * a for o in c.team.opp.active()))[-2]) < 1e-6

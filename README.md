@@ -21,6 +21,9 @@ What is in this first version:
 - **Difficulty**: Beginner, Amateur, Pro, World Class and Legendary. **Style**: Arcade, or Authentic (slower, less accurate, with offside on full pitches).
 - **Football**: assisted passes, through balls, lobs and crosses; shots with power and placement, finesse curlers and chips; headers and first-time volleys; skill moves; sprinting knocks the ball ahead. Defending uses press and tackle, slide tackles, and calling a second man. There are fouls, cards, free kicks, penalties, corners, throw-ins and goal kicks.
 - **Team AI**: the team keeps its shape and presses, marks, makes support runs, plays passes based on the passing lanes, and has keepers who position themselves, dive, catch, parry, rush out and distribute.
+- **Team styles**: every side plays its own way. Legends keep the ball, All Stars break on the counter, Queens press high, Pioneers go direct, Myths are chaos and Cult Heroes sit in a low block. The team-select screen tells you who plays how.
+- **Forgiving controls**: a pass or shot pressed a split second after the ball runs off your foot still counts, an early tackle still goes in, and the stick steers your first touch (leave it alone to kill the ball dead, push it across your body to turn, sprint to knock it into space).
+- **Pitch guides** (Settings or Pause, on by default): a ring under the team-mate your pass will find, the through-ball lane, a white ring under the player a switch would give you, and the offside line on Authentic full pitches.
 - **Presentation**: a floodlit stadium with crowds that react, a broadcast camera (plus tactical, end-to-end and third-person cameras), goal replays, captions from the commentary, a radar, and a scoreboard and HUD that scale with the window.
 
 **Controls** (both players can share a keyboard, and gamepads work as well):
@@ -37,6 +40,8 @@ What is in this first version:
 | Finesse (hold while shooting to curl it) | E | ' | RB |
 | Skill move | Space | Enter | LT |
 | Pause | Esc | | Start |
+
+**Soak test and balance report** (no window needed): `python tools/sim_matches.py -n 200 --format full` plays CPU v CPU matches flat out and prints goals, shots, passing, fouls and set pieces, how each team style plays (`--compare-styles` uses identical squads), and any stuck states (a crash, a dead ball, a restart nobody takes, players outside the ground) with the seed to replay them (`--replay SEED`).
 
 Keys can be changed under Controls; a key that is already in use swaps with the other action. Settings are saved in `~/.ultimate_football/`.
 

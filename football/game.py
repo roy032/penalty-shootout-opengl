@@ -13,6 +13,7 @@ from panda3d.core import TextNode, WindowProperties
 
 from . import app as A
 from .sim import roster
+from .sim.styles import style_for
 from .sim.match import FIXED_DT, DIFFICULTY, Match
 from .view.camera import LABELS as CAM_LABELS, MODES as CAM_MODES
 from .view.commentary import Commentary
@@ -37,7 +38,7 @@ class MatchSession:
         if shootout_only:
             self.match.start_shootout()
         self.view = MatchView(app, self.match, quality=s['quality'], night=s['night'],
-                              cam_mode='broadcast' if attract else s['camera'])
+                              cam_mode='broadcast' if attract else s['camera'], guides=s['guides'])
         self.hud = None if attract else Hud(app, self.match, app.inputs, show_hints=s['hints'])
         self.comm = Commentary()
         self.acc = 0.0
@@ -354,7 +355,7 @@ class FootballApp(ShowBase):
         Menu(self, 'KICK OFF', [
             Row('Your team', options=teams, get=g('home'), set=st('home'),
                 help=self._team_help('home')),
-            Row('Opponent', options=teams, get=g('away'), set=st('away')),
+            Row('Opponent', options=teams, get=g('away'), set=st('away'), help=self._team_help('away')),
             Row('Players', options=A.MODES, get=g('mode'), set=st('mode'),
                 help='Two players: one on the keyboard (or pad 1), the other on arrows (or pad 2)'),
             Row('Format', options=A.FORMAT_LABELS, get=g('format'), set=st('format')),
@@ -368,7 +369,10 @@ class FootballApp(ShowBase):
         ], back=self.main_menu, footer='Left and right change an option.')
 
     def _team_help(self, k):
-        return 'Teams of legends, icons, current stars and fantasy players, plus club sides'
+        def text():
+            st = style_for(self.settings[k])
+            return 'Plays: %s. %s.' % (st['label'], st['blurb'])
+        return text
 
     def settings_menu(self):
         self.clear_menus()
@@ -387,6 +391,8 @@ class FootballApp(ShowBase):
                 set=st('quality'), help='Shadows, smoothing and glow. Restart the game to apply all of it.'),
             Row('Camera', options=[(k, CAM_LABELS[k]) for k in CAM_MODES], get=g('camera'), set=st('camera')),
             Row('Control hints', options=[(True, 'On'), (False, 'Off')], get=g('hints'), set=st('hints')),
+            Row('Pitch guides', options=[(True, 'On'), (False, 'Off')], get=g('guides'), set=st('guides'),
+                help='Rings under your pass target and next switch, the through-ball lane and the offside line'),
             Row('Auto switching', options=[(True, 'On'), (False, 'Off')], get=g('auto_switch'),
                 set=st('auto_switch'), help='Hand you the player nearest the ball when defending'),
             Row('Volume', options=levels, get=g('volume'), set=vol('volume')),
@@ -457,10 +463,15 @@ class FootballApp(ShowBase):
             s['hints'] = v
             se.hud.show_hints = v
 
+        def guides(v):
+            s['guides'] = v
+            se.view.guides = v
+
         Menu(self, 'PAUSED', [
             Row('Resume', self._resume),
             Row('Camera', options=[(k, CAM_LABELS[k]) for k in CAM_MODES], get=lambda: s['camera'], set=cam),
             Row('Control hints', options=[(True, 'On'), (False, 'Off')], get=lambda: s['hints'], set=hints),
+            Row('Pitch guides', options=[(True, 'On'), (False, 'Off')], get=lambda: s['guides'], set=guides),
             Row('Restart match', lambda: self.start_match(shootout_only=bool(se.match.shootout and se.match.half == 1))),
             Row('Quit to main menu', self._quit_to_menu),
         ], back=self._resume, width=1.1)

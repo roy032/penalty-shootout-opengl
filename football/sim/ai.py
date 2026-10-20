@@ -4,7 +4,6 @@ for everyone the human isn't steering."""
 
 import math
 
-from . import ball as B
 from .player import norm
 from .styles import style_for
 

@@ -82,7 +82,8 @@ class Menu:
             b['frameColor'] = SEL if i == self.sel else ROW
             b['text_fg'] = (0.05, 0.05, 0.08, 1) if i == self.sel else TXT
         r = self.rows[self.sel] if self.rows else None
-        self.help.setText((r.help if r else '') or self.footer)
+        hl = (r.help() if callable(r.help) else r.help) if r else ''
+        self.help.setText(hl or self.footer)
 
     def refresh(self):
         self._refresh()

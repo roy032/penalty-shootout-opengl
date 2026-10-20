@@ -365,6 +365,9 @@ class Match:
             for p in self.all_players():
                 p.update(dt, False, self.pitch)
             b.step(dt)
+            if b.out_of_play():
+                # Over the line between kicks: the ball boy has it, it doesn't roll on into the stands
+                b.vel = [0.0, 0.0, min(0.0, b.vel[2])]
             self.shootout_step(dt)
             self._record()
             return self.events
@@ -1651,6 +1654,34 @@ class Match:
             c.tackle_t = EARLY_TACKLE
         if 'shoot' in inp.pressed:
             c.charge = 0.0
+
+    def guide(self, c):
+        """What the on-pitch guides show for controller c: who an assisted pass would go to,
+        where a through ball would be played, who a switch would hand you, and the offside
+        line. Any of them can be None."""
+        g = dict(pass_to=None, through=None, switch=None, offside=None)
+        p = c.player
+        if p is None or p.sent_off or self.state not in ('play', 'kickoff', 'restart'):
+            return g
+        b = self.ball
+        stick = norm(*c.move) if math.hypot(*c.move) > 0.2 else None
+        if b.owner is p or (self.restart and self.restart['taker'] is p and not self.restart.get('taken')):
+            g['pass_to'] = self.pick_receiver(p, stick, 'ground')
+            m = self.pick_receiver(p, stick, 'through')
+            if m is not None and not m.keeper and (m.pos[0] - p.pos[0]) * p.team.attack > 2.0:
+                g['through'] = (m, self.lead_point(p, m, 'through'))
+            if self.settings['offside']:
+                a = p.team.attack
+                xs = sorted((o.pos[0] * a for o in p.team.opp.active()), reverse=True)
+                line = max(xs[1] if len(xs) > 1 else 0.0, 0.0, b.pos[0] * a)
+                # Only when someone is close enough to it to matter
+                if line > 0 and any(abs(q.pos[0] * a - line) < 6.0 for q in p.team.active() if q is not p):
+                    g['offside'] = line * a
+        elif self.team_in_possession() is not c.team:
+            nxt = self.switch_target(c, (0.0, 0.0))
+            if nxt is not p:
+                g['switch'] = nxt
+        return g
 
     def _late_grace(self, c, p):
         b = self.ball
