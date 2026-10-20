@@ -7,11 +7,14 @@ import random
 
 from . import ball as B
 from . import roster
+from .styles import style_for
 from .ball import Ball
 from .pitch import PITCHES
 from .player import Player, CONTROL, REACH_HEAD, norm, ang_diff
 
 FIXED_DT = 1.0 / 60.0
+LATE_GRACE = 0.13           # a press this soon after the ball slips off your foot still plays it
+EARLY_TACKLE = 0.25         # a tackle pressed this early still goes in when the man takes his touch
 
 # Formations as (role, fx, fy): fx runs -1 (own goal line) .. +1 (opponent's), fy -1 .. +1 across
 FORMATIONS = {
@@ -34,7 +37,7 @@ DIFFICULTY = {
 
 DEFAULTS = dict(size=5, pitch='cage', half_seconds=150.0, difficulty='pro', preset='arcade', fouls=True,
                 cards=True, offside=None, decider='penalties', assist=True, auto_switch=True, weather='clear',
-                stamina=True, extra_time=False)
+                stamina=True, extra_time=False, styles=None)
 
 
 class Team:
@@ -51,6 +54,7 @@ class Team:
         self.ai_react = 0.2
         self.ai_noise = 0.1
         self.press = 1.0
+        self.style = style_for(info['id'])     # how the AI likes to play (styles.py)
         self.human = False
         self.stats = collections.Counter()
         self.possession_t = 0.0
@@ -90,6 +94,10 @@ class Controller:
         self.lock_t = 0.0           # no auto-switch right after a manual one
         self.queued = None          # first-time action waiting for the ball
         self.queue_t = 0.0
+        self.move = (0.0, 0.0)      # this tick's stick, for the first touch
+        self.held = frozenset()
+        self.owned_tick = -10 ** 6  # last tick the controlled player had the ball at his feet
+        self.tackle_t = 0.0         # tackle pressed a moment before the opponent got the ball
 
 
 class Input:
@@ -127,6 +135,11 @@ class Match:
             self.teams.append(team)
         a, b = self.teams
         a.opp, b.opp = b, a
+        if s['styles']:
+            # Force a style per side (the soak tool compares styles with identical squads)
+            for t, key in zip(self.teams, s['styles']):
+                if key:
+                    t.style = style_for(t.info['id'], key)
         # Away side changes into a neutral kit if the shirts clash
         if roster.kits_clash(a.info['shirt'], b.info['shirt']):
             b.info = dict(b.info, shirt=(0.95, 0.95, 0.95), shorts=(0.12, 0.12, 0.14), socks=(0.95, 0.95, 0.95))
@@ -146,6 +159,7 @@ class Match:
             else:
                 t.ai_react = 0.16
                 t.ai_noise = 0.08
+            t.press *= t.style['press']
             if s['preset'] == 'authentic':
                 t.error_scale *= 1.35
                 t.speed_scale *= 0.94
@@ -249,7 +263,7 @@ class Match:
     def _kickoff_taker(self, team):
         outs = [p for p in team.active() if not p.keeper]
         outs.sort(key=lambda p: -p.slot[0])
-        return outs[0]
+        return outs[0] if outs else team.keeper()
 
     def _give_control(self, team, player):
         for c in self.controllers:
@@ -618,12 +632,16 @@ class Match:
         rvx, rvy = b.vel[0] - p.vel[0], b.vel[1] - p.vel[1]
         rel = math.hypot(rvx, rvy)
         limit = 11.0 + 12.0 * p.fb.dribbling
+        if c is not None and math.hypot(*c.move) < 0.2:
+            limit += 4.0        # stick left alone: he cushions it dead
         if rel > limit and self.rng.random() < min(0.8, (rel - limit) / 10.0 + 0.2):
             # Heavy touch: it bounces away
             b.vel = [b.vel[0] * -0.25 + p.vel[0] * 0.6 + self.rng.uniform(-2, 2),
                      b.vel[1] * -0.25 + p.vel[1] * 0.6 + self.rng.uniform(-2, 2), 0.6]
             p.touch_cd = 0.3
             self.emit('touch', who=self._idx(p), heavy=True)
+            return
+        if c is not None and self._push_touch(p, c):
             return
         b.owner = p
         b.vel = [p.vel[0], p.vel[1], 0.0]
@@ -634,6 +652,37 @@ class Match:
             if c.team is p.team and c.player is not p and (self.settings['auto_switch'] or c.player is None):
                 c.player = p
                 c.charge = None
+
+    def _push_touch(self, p, c):
+        """Directional first touch: with the stick held, a sprinting player knocks the ball
+        into space ahead of him, and any player can take it across his body or turn with
+        it, away from where it came from. Returns True if the ball was pushed."""
+        mx, my = c.move
+        if math.hypot(mx, my) < 0.5 or getattr(p, 'push_tick', -10 ** 6) > self.ticks - 90:
+            return False
+        ux, uy = norm(mx, my)
+        b = self.ball
+        # Where the ball came from: pushing the stick back towards it means "come and meet it"
+        fx, fy = norm(-(b.vel[0] - p.vel[0]), -(b.vel[1] - p.vel[1]))
+        if fx == 0.0 and fy == 0.0:
+            fx, fy = p.dir()
+        turn = ux * fx + uy * fy < 0.7          # more than about 45 degrees away from it
+        sprint = 'sprint' in c.held and p.stamina > 0.05
+        if not (turn or sprint):
+            return False
+        ahead = max(0.0, p.vel[0] * ux + p.vel[1] * uy)
+        speed = min(13.0, max(3.5, ahead) + (3.4 if sprint else 2.0) + 1.0 * p.fb.dribbling)
+        # A touch is never perfect: a little spread, less for good dribblers
+        ang = math.atan2(uy, ux) + self.rng.gauss(0.0, 0.1 * (1.2 - p.fb.dribbling) * p.team.error_scale)
+        b.owner = None
+        b.kick(math.cos(ang) * speed, math.sin(ang) * speed, 0.0)
+        b.last_touch = p
+        p.push_tick = self.ticks
+        p.touch_cd = 0.14
+        p.receiving = False
+        p.facing = math.atan2(uy, ux)
+        self.emit('touch', who=self._idx(p), soft=True, push=True)
+        return True
 
     def _aerial(self, p, kind):
         b = self.ball
@@ -1136,6 +1185,9 @@ class Match:
             p.yellow += 1
             if p.yellow >= 2:
                 card = 'red'
+        if card == 'red' and len(p.team.active()) <= self.min_players():
+            # Too few left to play on: the referee keeps it to a yellow
+            card = 'yellow'
         if card:
             self.emit('card', who=self._idx(p), card=card)
             self.log.append(dict(kind=card, team=p.team.idx, name=p.fb.name, minute=int(self.clock()) + 1))
@@ -1148,6 +1200,11 @@ class Match:
             self.emit('penalty_awarded', team=team.idx)
         else:
             self.set_piece('freekick', team, x, y)
+
+    def min_players(self):
+        """Fewest players a side can be reduced to (7 of 11, as in the laws; scaled for small-sided)."""
+        size = self.settings['size']
+        return {5: 3, 7: 5}.get(size, max(3, size - 4))
 
     def _send_off(self, p):
         p.sent_off = True
@@ -1446,6 +1503,9 @@ class Match:
 
     def _human(self, c, inp, dt):
         c.lock_t = max(0.0, c.lock_t - dt)
+        c.move = inp.move
+        c.held = frozenset(inp.held)
+        c.tackle_t = max(0.0, c.tackle_t - dt)
         b = self.ball
         if c.queued is not None:
             c.queue_t -= dt
@@ -1515,6 +1575,15 @@ class Match:
             else:
                 p.target = None
 
+        # Late press: the ball has only just slipped off his foot (a sprint knock-on or a
+        # push touch), so a pass or shot pressed now still plays it
+        if b.owner is p:
+            c.owned_tick = self.ticks
+        elif self._late_grace(c, p) and (inp.pressed & {'pass', 'through', 'lob', 'shoot'}):
+            b.owner = p
+            b.vel = [p.vel[0], p.vel[1], 0.0]
+            c.owned_tick = self.ticks
+
         if b.owner is p:
             if 'shoot' in inp.pressed:
                 c.charge = 0.0
@@ -1561,7 +1630,10 @@ class Match:
                     self.do_tackle(p)
                 elif p.dist_to(b.pos[0], b.pos[1]) < 1.25 and p.tackle_cd <= 0 and self.rng.random() < dt * 2.5:
                     self.do_tackle(p)
-            elif 'pass' in inp.pressed and o is not None and p.dist_to(b.pos[0], b.pos[1]) < 1.6:
+            elif o is not None and p.dist_to(b.pos[0], b.pos[1]) < 1.6 and \
+                    ('pass' in inp.pressed or c.tackle_t > 0):
+                # Pressed now, or a moment before he took his touch
+                c.tackle_t = 0.0
                 self.do_tackle(p)
             if 'shoot' in inp.pressed:
                 self.do_slide(p, stick)
@@ -1574,8 +1646,20 @@ class Match:
             if k in inp.pressed:
                 c.queued = (k, stick)
                 c.queue_t = 0.7
+        if 'pass' in inp.pressed:
+            # If an opponent gets there first, it becomes a tackle instead
+            c.tackle_t = EARLY_TACKLE
         if 'shoot' in inp.pressed:
             c.charge = 0.0
+
+    def _late_grace(self, c, p):
+        b = self.ball
+        if b.owner is not None or b.holder is not None or b.last_touch is not p or p.busy():
+            return False
+        if (self.ticks - c.owned_tick) * FIXED_DT > LATE_GRACE or b.airborne():
+            return False
+        fx, fy = p.foot_point(0.28)
+        return math.hypot(b.pos[0] - fx, b.pos[1] - fy) < CONTROL * 2.2
 
     # ---------------------------------------------------------- replays
     def _record(self):

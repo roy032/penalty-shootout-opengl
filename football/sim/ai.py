@@ -6,6 +6,7 @@ import math
 
 from . import ball as B
 from .player import norm
+from .styles import style_for
 
 
 class TeamAI:
@@ -20,6 +21,9 @@ class TeamAI:
         self.presser = None
         self.cover = None
         self.marks = {}
+        self.style = getattr(team, 'style', None) or style_for(team.info['id'])
+        self.had_ball = False
+        self.won_tick = -10 ** 6     # when we last won the ball back, for counter-attacks
 
     # =========================================================== the loop
     def update(self, dt):
@@ -54,6 +58,11 @@ class TeamAI:
         if not outs:
             return
         owner = b.owner or b.holder
+        ours = owner is not None and owner.team is t
+        if ours and not self.had_ball:
+            self.won_tick = m.ticks
+        if owner is not None:
+            self.had_ball = ours
         if owner is None and m.state == 'play':
             pt = m.pass_target
             if pt and pt[0] is not None and pt[0].team is t:
@@ -126,10 +135,12 @@ class TeamAI:
         fx, fy = p.slot
         bx = b.pos[0] * a          # ball position in our attacking frame
         # The block slides with the ball, pushes up when we have it
+        st = self.style
         x = fx * pt.half_length * 0.62 + bx * 0.5 + (0.12 if attacking else -0.06) * pt.half_length
+        x += st['line'] * pt.half_length * (0.5 if attacking else 1.0)
         if p.role == 'FWD' and attacking:
             x += pt.half_length * 0.1
-        y = fy * pt.half_width * (0.82 if attacking else 0.62) + b.pos[1] * 0.28
+        y = fy * pt.half_width * (0.82 * st['width'] if attacking else 0.62) + b.pos[1] * 0.28
         if not attacking:
             # Stay goal-side of the ball
             x = min(x, bx - 1.5 if p.role != 'FWD' else bx + 3)
@@ -172,7 +183,7 @@ class TeamAI:
         a = self.team.attack
         x, y = self.shape_spot(p, True)
         # Forwards (and sometimes midfielders) run in behind
-        run = p.role == 'FWD' or (p.role == 'MID' and (p.idx + int(m.time / 6)) % 3 == 0)
+        run = p.role == 'FWD' or (p.role == 'MID' and (p.idx + int(m.time / 6)) % self.style['runs'] == 0)
         if run and owner.pos[0] * a > -pt.half_length * 0.3:
             line = self._offside_line() if m.settings['offside'] else self._last_line()
             depth = 0.5 if m.settings['offside'] else 4.0
@@ -292,8 +303,12 @@ class TeamAI:
         noise = self.team.ai_noise
         a = self.team.attack
         gx = self.team.opp_goal_x(pt)
+        st = self.style
         options = []
         near = self._pressure(p)
+        # Just won it back: a counter-attacking side looks forward first
+        fresh = (m.ticks - self.won_tick) < 4.0 * 60
+        forward = st['forward'] + (st['counter'] if fresh else 0.0)
         # Shooting
         xg = m.xg(p.pos[0], p.pos[1], self.team)
         block = 0
@@ -308,15 +323,17 @@ class TeamAI:
                     block += 1
         sx = xg * (0.55 ** block)
         dist = math.hypot(gx - p.pos[0], p.pos[1])
-        if dist < pt.length * 0.42:
-            options.append((sx * 5.0 - 0.45 + rng.uniform(-noise, noise), 'shoot'))
+        if dist < pt.length * (0.42 + max(0.0, st['shoot']) * 0.3):
+            options.append((sx * 5.0 - 0.45 + st['shoot'] + rng.uniform(-noise, noise), 'shoot'))
         # Passing
         best_pass = None
         for mate in self.team.active():
             if mate is p:
                 continue
-            for kind in ('ground', 'through'):
+            for kind in ('ground', 'through', 'lob'):
                 if kind == 'through' and (mate.role == 'GK' or mate.pos[0] * a < p.pos[0] * a):
+                    continue
+                if kind == 'lob' and (st['long'] <= 0 or mate.keeper or mate.pos[0] * a < p.pos[0] * a + 6.0):
                     continue
                 tx, ty = m.lead_point(p, mate, kind)
                 if not (-pt.half_length < tx < pt.half_length):
@@ -324,22 +341,29 @@ class TeamAI:
                 d = math.hypot(tx - p.pos[0], ty - p.pos[1])
                 if d < 3.0 or d > pt.length * 0.6:
                     continue
+                if kind == 'lob' and d < 14.0:
+                    continue
                 safe = self._lane_safety(p, tx, ty)
                 space = min((o.dist_to(tx, ty) for o in self.team.opp.active()), default=8.0)
+                if kind == 'lob':
+                    # Over the top: the lane doesn't matter, the landing spot does
+                    safe = max(safe, min(space, 4.0) * 0.12 - 0.15)
                 prog = (tx * a - p.pos[0] * a) / pt.half_length
-                val = 0.2 + prog * 1.2 + m.xg(tx, ty, self.team) * 4.0 + min(space, 6.0) * 0.06
+                val = 0.2 + prog * (1.2 + forward) + m.xg(tx, ty, self.team) * 4.0 + min(space, 6.0) * 0.06
                 if mate.keeper:
                     val -= 0.7
                 if m.settings['offside'] and kind == 'through' and mate.pos[0] * a > self._offside_line() + 0.2:
                     val -= 2.0
                 risk = 1.0 / (1.0 + math.exp(-safe * 7.0))
-                score = val * risk - (1.0 - risk) * 1.2 + rng.uniform(-noise, noise)
+                score = val * risk - (1.0 - risk) * st['risk'] + rng.uniform(-noise, noise)
                 if kind == 'through':
-                    score -= 0.05
+                    score += st['through'] - 0.05
+                elif kind == 'lob':
+                    score += st['long'] - 0.45
                 if best_pass is None or score > best_pass[0]:
                     best_pass = (score, kind, mate)
         if best_pass:
-            options.append((best_pass[0], 'pass'))
+            options.append((best_pass[0] + st['passing'], 'pass'))
         # Dribbling
         best_drib = None
         want = math.atan2(-p.pos[1] * 0.3, a)
@@ -350,7 +374,7 @@ class TeamAI:
             if abs(cx) > pt.half_length - 1 or abs(cy) > pt.half_width - 1:
                 continue
             free = min((o.dist_to(cx, cy) for o in self.team.opp.active() if not o.keeper), default=8.0)
-            val = (dx * a) * 0.3 + min(free, 5.0) * 0.08 - 0.32 + 0.2 * p.fb.dribbling
+            val = (dx * a) * 0.3 + min(free, 5.0) * 0.08 - 0.32 + 0.2 * p.fb.dribbling + st['dribble']
             if near < 2.2:
                 val -= 0.2
             if best_drib is None or val > best_drib[0]:
@@ -364,7 +388,7 @@ class TeamAI:
         options.sort(key=lambda o: -o[0])
         choice = options[0][1] if options else 'dribble'
         # Don't pass the instant it arrives unless pressed
-        if choice == 'pass' and p.dribble_t < 0.18 and near > 2.0:
+        if choice == 'pass' and p.dribble_t < st['tempo'] and near > 2.0:
             choice = 'dribble'
         if choice == 'shoot':
             style = 'normal'
@@ -387,7 +411,8 @@ class TeamAI:
             p.sprint = free > 4.0 and p.stamina > 0.3
             p.want_speed = p.top_speed(True)
             # A trick to beat the man in front
-            if near < 1.8 and p.fb.dribbling > 0.78 and rng.random() < 0.08 * p.fb.dribbling:
+            if near < 1.8 and p.fb.dribbling > 0.78 and \
+                    rng.random() < 0.08 * p.fb.dribbling * (1.0 + 4.0 * max(0.0, st['dribble'])):
                 m.do_skill(p, (-dy, dx) if rng.random() < 0.5 else (dy, -dx))
 
     # ---------------------------------------------------------- set pieces
