@@ -6,10 +6,11 @@ import math
 import os
 import random
 import time
+import zlib
 
 from . import (achievements, ai, characters as CH, commentary, config as C, gfx, physics, report, squad as S, stadium,
                stats, winprob)
-from .controls import CONTROLS
+from .controls import CONTROLS, MENU_KEYS
 from .keeper import Keeper
 from .kick import Kick
 from .modes import (CHALLENGE_ORDER, BINS, TUTORIAL as TUTORIAL_STEPS, CareerComp, ChallengeComp, GhostComp, KingOfTheGoal, Knockout,
@@ -20,6 +21,12 @@ from .scenarios import SCENARIOS, really_lost
 
 WALK_TIME = 3.6
 RITUAL_TIME = 1.2          # placing the ball after the walk, before the whistle
+RESULT_TIME = 2.4          # the result banner before the next kick
+VAR_TIME = 2.6
+QUICK = 0.45               # 'quick' pacing: every cutscene runs at this share of its length
+REPLAY_FPS = 60.0          # replay frames are kept on the simulation clock, whatever the frame rate
+SKIP_KEYS = (' ', '\r')
+PACINGS = ['normal', 'quick']
 CAMERAS = ['broadcast', 'goal', 'side', 'keeper', 'orbit']
 REPLAY_CAMERAS = ['auto', 'net', 'ball', 'side', 'goalline', 'spider']
 DAYTIMES = ['night', 'day', 'dusk', 'sunset']
@@ -180,9 +187,56 @@ def auto_camera(i, replay):
     return 'net'
 
 
+def _num(v, lo, hi):
+    v = float(v)
+    if not (math.isfinite(v) and lo <= v <= hi):
+        raise ValueError(v)
+    return v
+
+
+def _colour(v):
+    if not isinstance(v, (list, tuple)) or len(v) != 3:
+        raise ValueError(v)
+    return tuple(_num(c, 0.0, 1.0) for c in v)
+
+
+def valid_duel(data):
+    """A clean copy of a ghost duel from a file, or None if anything is wrong
+    with it: every number is checked, so a bad file can't crash the match."""
+    try:
+        name = data.get('name', 'GHOST')
+        if not isinstance(name, str) or not name.strip():
+            name = 'GHOST'
+        kit = data['kit']
+        kit = dict(shirt=_colour(kit['shirt']), shorts=_colour(kit.get('shorts', (0.95, 0.95, 0.95))),
+                   keeper=_colour(kit.get('keeper', (0.2, 0.2, 0.25))))
+        kicks = data['kicks']
+        if not isinstance(kicks, list) or not 1 <= len(kicks) <= 20:
+            return None
+        clean = []
+        for k in kicks:
+            shot = k['shot']
+            if shot['kind'] not in C.SHOT_TYPES or len(shot['target']) != 2:
+                return None
+            runup = k.get('runup', 'angled')
+            clean.append(dict(
+                shot=dict(kind=shot['kind'], target=(_num(shot['target'][0], -15.0, 15.0),
+                                                     _num(shot['target'][1], -1.0, 10.0)),
+                          speed=_num(shot['speed'], 1.0, 60.0), curl=_num(shot.get('curl', 0.0), -20.0, 20.0),
+                          knuckle=_num(shot.get('knuckle', 0.0), 0.0, 20.0),
+                          knuckle_phase=_num(shot.get('knuckle_phase', 0.0), -10.0, 10.0)),
+                power=_num(k.get('power', 0.7), 0.0, 1.0), runup=runup if runup in C.RUNUPS else 'angled'))
+        score = data.get('score')
+        return dict(version=1, name=name.strip()[:24], kit=kit, kicks=clean,
+                    score=int(score) if isinstance(score, int) and not isinstance(score, bool) else None)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
 class Game:
     def __init__(self, audio=None, rng=None, stats_path=stats.PATH):
         self.rng = rng or random.Random()
+        self._saved_rng = None               # the game's own rng while the Daily borrows self.rng
         self.crng = random.Random()          # commentary only, so it never changes the match
         self.audio = audio
         self.stats_path = stats_path
@@ -194,7 +248,8 @@ class Game:
         self.kicks_per_side = 5
         self.order = 'abab'
         self.teams = {'p1': 0, 'p2': 1}
-        self.hidden_aim = True
+        self.hidden_aim = False             # off by default: on one keyboard the kicker would aim blind
+        self.pacing = 'normal'
         self.scenario = 0
         self.party_type = 'king'
         self.party_players = 4
@@ -216,7 +271,12 @@ class Game:
         self.captions_on = False
         self.menu_focus = 0
         self.rebind = None                 # (slot, action index) while rebinding keys
+        self._rebind_backup = None         # the bindings before rebinding started, for ESC
         self.local_slot = None             # set for LAN play: the slot this screen controls
+        self.lan_state = None              # the host's names, kits and squads, so both screens match
+        self.lan_lines = []                # the LAN waiting screen's text
+        self.lan_notice = None             # e.g. the other player has left
+        self.confirm_quit = False
         # Characters
         self.squads = 'club'               # club squads, a random draft of icons, or pick them
         self.picks = {}                    # roster keys picked on the select screen
@@ -255,6 +315,8 @@ class Game:
         self.export_request = False        # the app records the replay to a GIF
         self.playback = None               # kick records when watching a saved replay
         self._accum = 0.0
+        self._rec_t = 0.0
+        self._rec_ev = False
         self._wp_cache = {}
         self.new_match()
 
@@ -286,7 +348,7 @@ class Game:
             rows.append('variant')
             if self.variant == 'stadium':
                 rows.append('stadium')
-        rows += ['weather', 'daytime', 'graphics', 'assist', 'commentary', 'captions', 'phone', 'start']
+        rows += ['weather', 'daytime', 'graphics', 'pacing', 'assist', 'commentary', 'captions', 'phone', 'start']
         return rows
 
     def sweet(self):
@@ -335,6 +397,17 @@ class Game:
     def is_human(self, slot):
         return self.comp.is_human(slot)
 
+    def keys_for(self, slot):
+        """The keys that control slot. One human plays on Player 1's keys (and
+        pad 1) whichever side they are on; with two humans each has their own."""
+        if self.local_slot is None and self.comp.is_human(slot) and not self.comp.is_human(other(slot)):
+            return CONTROLS['p1']
+        return CONTROLS[slot]
+
+    def pace(self, seconds):
+        """How long a cutscene lasts at the chosen pacing."""
+        return seconds * QUICK if self.pacing == 'quick' else seconds
+
     def controller(self, slot):
         """Whose keys pick the line-up for a side: a human player or a manager."""
         return self.is_human(slot) or self.comp.manager == slot
@@ -356,6 +429,8 @@ class Game:
         return datetime.date.today().isoformat()
 
     def _make_comp(self):
+        if self._saved_rng is not None and (self.mode != 'daily' or self.playback is not None):
+            self.rng, self._saved_rng = self._saved_rng, None      # the Daily is over: back to our own
         self.squad_seed = self.rng.randrange(1 << 30)
         srng = random.Random(self.squad_seed)
         if self.playback is not None:
@@ -406,7 +481,11 @@ class Game:
         if m == 'daily':
             seed = int(self.daily_date().replace('-', ''))
             drng = random.Random(seed)
-            self.rng = random.Random(seed + 1)       # same kicks and dives for everyone today
+            # Same kicks and dives for everyone today, on a borrowed rng so later matches stay random
+            if self._saved_rng is None:
+                self._saved_rng = self.rng
+            self.rng = random.Random(seed + 1)
+            self.squad_seed = seed
             opp = drng.choice(C.TEAMS[1:])
             kits = {'p1': dict(C.KITS['p1']), 'p2': dict(shirt=opp['shirt'], shorts=opp['shorts'],
                                                          keeper=opp['keeper'])}
@@ -484,6 +563,8 @@ class Game:
         return out
 
     def _apply_form(self):
+        if self.lan_state and self.local_slot is not None:
+            return                          # LAN: the host's form came with the squads
         form = self.stats.setdefault('form', {})
         for s, p in self.all_players():
             p.form = form.get(p.record_key(self.name(s) if s else ''), 0)
@@ -494,6 +575,8 @@ class Game:
             variant = self.playback_data.get('variant', 'stadium')
         C.apply_variant(variant)
         self.comp = self._make_comp()
+        if self.lan_state and self.local_slot is not None:
+            self._apply_lan_state()
         self.memory = ai.ShotMemory()
         self.profile = self.rng.choice(ai.PROFILES)
         self.preloaded = {s: len(r['results']) for s, r in zip(('p1', 'p2'), self.comp.rows())} \
@@ -517,6 +600,29 @@ class Game:
         self.shot_speed = 0.0
         self.shot_xg = None
         self._reset_tie()
+
+    # ---------------------------------------------------------------- LAN
+    def lan_export(self):
+        """The host's names, kits and squads (with form), sent at kick-off: each
+        machine's saved form, unlocked characters and mods could differ."""
+        comp = self.comp
+        return dict(names=dict(comp.names), kits={s: {k: list(v) for k, v in kit.items()} for s, kit in comp.kits.items()},
+                    order={s: [p.to_dict() for p in o] for s, o in comp.order.items() if o}
+                    if isinstance(comp, ShootoutComp) else None)
+
+    def _apply_lan_state(self):
+        st, comp = self.lan_state, self.comp
+        comp.names = dict(st['names'])
+        comp.kits = {s: {k: tuple(v) for k, v in kit.items()} for s, kit in st['kits'].items()}
+        if st.get('order') and isinstance(comp, ShootoutComp):
+            comp.order = {s: [S.Player.from_dict(d) for d in o] for s, o in st['order'].items()}
+            comp.squads = {s: list(o) for s, o in comp.order.items()}
+
+    def sync_checksum(self):
+        """A checksum of the last kick, compared across a LAN game to spot drift."""
+        last = self.records[-1] if self.records else None
+        rows = [r['results'] for r in self.comp.rows()] if hasattr(self.comp, 'rows') else []
+        return zlib.crc32(json.dumps([last, rows], sort_keys=True, default=str).encode()) & 0xffffffff
 
     def _reset_tie(self):
         """Everything that starts afresh for each shootout (tournament ties too)."""
@@ -573,6 +679,7 @@ class Game:
         self.var = None
         self.preview = self.mode == 'training'
         self.drill_zone = 0
+        self.walk_len = self.pace(WALK_TIME)
         self.rebound = None
         self.walk_skip = False
         self.forced = None
@@ -697,6 +804,7 @@ class Game:
         self.stakes = self.comp.stakes(self.kicker)
         self.ai_plan = None
         self.bottle_note = None
+        self.walk_len = self.pace(WALK_TIME)
         sig = self.player.signature if self.player is not None else None
         if (sig in CH.SIG_SHOT and self.shot_kind == 'placed' and self.is_human(self.kicker)
                 and CH.SIG_SHOT[sig] in C.shot_order()):
@@ -932,9 +1040,23 @@ class Game:
         while self._accum >= C.SIM_DT:
             self._accum -= C.SIM_DT
             self._tick(C.SIM_DT)
-        # Record for the replay: the run-up, the flight and a moment after
+            self._record(C.SIM_DT)
+
+    def _record(self, dt):
+        """Keep a replay frame every 1/60 s of simulated time: the run-up, the
+        flight and a moment after. (Per drawn frame, replays would run at the
+        wrong speed on anything but a 60 Hz screen.)"""
         if self.phase in ('runup', 'flight', 'rebound') or (self.phase == 'result' and self.phase_t < 0.9):
-            self.recording.append(self.view())
+            self._rec_t += dt
+            if self._rec_t >= 1.0 / REPLAY_FPS - 1e-9:
+                self._rec_t -= 1.0 / REPLAY_FPS
+                frame = self.view()
+                if self._rec_ev:
+                    frame['ev'] = True
+                self._rec_ev = False
+                self.recording.append(frame)
+        else:
+            self._rec_t = 1.0 / REPLAY_FPS          # the first frame is kept straight away
 
     def _tick(self, dt):
         self.phase_t += dt
@@ -942,19 +1064,19 @@ class Game:
         if self.card and self.clock - self.card[2] > 2.6:
             self.card = None
         if ph == 'intro':
-            if self.phase_t > 9.0:
+            if self.phase_t > self.pace(9.0):
                 self.start_kick()
         elif ph == 'pre':
-            if self.phase_t > 0.8:
+            if self.phase_t > self.pace(0.8):
                 self.start_kick()
         elif ph == 'toss':
             self._tick_toss()
         elif ph == 'interlude':
-            if self.phase_t > 10.0:
+            if self.phase_t > self.pace(10.0):
                 self._next_tie()
         elif ph == 'walk':
             self.keeper.update(dt)
-            if self.phase_t > WALK_TIME or self.walk_skip:
+            if self.phase_t > self.walk_len or self.walk_skip:
                 self.walk_skip = False
                 if self.playback is None:
                     self._start_ritual()
@@ -979,21 +1101,24 @@ class Game:
                 self._tick_runup(dt)
         elif ph in ('flight', 'result'):
             self._step_kick(dt)
-            if ph == 'result' and self.phase_t > 2.4:
+            if ph == 'result' and self.phase_t > self.pace(RESULT_TIME):
                 self.after_result()
         elif ph == 'rebound':
             self._tick_rebound(dt)
         elif ph == 'var':
             self._step_kick(dt)
-            if self.phase_t > 2.6:
+            if self.phase_t > self.var_len():
                 self._resolve_var()
         elif ph == 'replay':
             frames = self.replay['frames']
-            i = int(self.replay['t'] * 60.0)
+            i = int(self.replay['t'] * REPLAY_FPS)
             self.replay['t'] += dt * replay_speed(i, self.replay)
-            if self.replay['t'] * 60.0 >= len(frames) + 30:
+            if self.replay['t'] * REPLAY_FPS >= len(frames) + 30:
                 self.phase = 'ended'
                 self.phase_t = 0.0
+
+    def var_len(self):
+        return self.pace(VAR_TIME)
 
     def _whistle(self):
         self.phase = 'aim'
@@ -1004,7 +1129,7 @@ class Game:
     def _start_ritual(self):
         self.phase = 'ritual'
         self.phase_t = 0.0
-        self.ritual_len = RITUAL_TIME
+        self.ritual_len = self.pace(RITUAL_TIME)
         if not self.is_human(self.kicker) and (self.rng.random() < 0.35 or self.persona() == 'thinker'):
             self._take_time()
 
@@ -1019,7 +1144,7 @@ class Game:
         """The kicker places the ball himself and takes a long breath."""
         if not self.ritual_kicker:
             self.ritual_kicker = True
-            self.ritual_len = max(self.ritual_len, 2.4)
+            self.ritual_len = max(self.ritual_len, self.pace(2.4))
             his = self.player.his if self.player is not None else 'his'
             self.message = f'{self.taker_name()} takes {his} time placing the ball...'
 
@@ -1029,7 +1154,7 @@ class Game:
         if self.took_ball:
             return
         self.took_ball = True
-        self.ritual_len += 1.0
+        self.ritual_len += self.pace(1.0)
         kpl = self.comp.keeper_player(slot)
         his = kpl.his if kpl is not None else 'his'
         self.message = f'{self.name(slot)} keeper picks the ball up and takes {his} time giving it back'
@@ -1041,21 +1166,26 @@ class Game:
         t = self.phase_t
         w = self.toss_winner
         if self.toss_stage == 'end':
-            if not self.is_human(w) and t > 1.4:
+            if not self.is_human(w) and t > self.pace(1.4):
                 self._choose_end(w)
-            elif t > 5.0:
+            elif t > self.pace(5.0):
                 self._choose_end(w)
         elif self.toss_stage == 'sub':
-            busy = any(self.lineup[s]['touched'] and not self.lineup[s]['ready'] for s in ('p1', 'p2'))
-            if (t > 3.2 and not busy) or t > 60.0:
-                self._finish_prep()
-                first = self.rng.choice(('p1', 'p2'))
-                self.comp.rules.first = first
-                self.message = f'{self.name(first)} will kick first'
-                self.toss_stage = 'first'
-                self.phase_t = 0.0
-        elif self.toss_stage == 'first' and t > 1.8:
+            if (t > self.pace(3.2) and not self._lineup_busy()) or t > 60.0:
+                self._end_prep()
+        elif self.toss_stage == 'first' and t > self.pace(1.8):
             self.start_kick()
+
+    def _lineup_busy(self):
+        return any(self.lineup[s]['touched'] and not self.lineup[s]['ready'] for s in ('p1', 'p2'))
+
+    def _end_prep(self):
+        self._finish_prep()
+        first = self.rng.choice(('p1', 'p2'))
+        self.comp.rules.first = first
+        self.message = f'{self.name(first)} will kick first'
+        self.toss_stage = 'first'
+        self.phase_t = 0.0
 
     def _finish_prep(self):
         """The computer managers make their choices."""
@@ -1130,7 +1260,7 @@ class Game:
         return C.GOAL_HALF_WIDTH + 0.74, C.GOAL_HEIGHT + 0.86
 
     def _move_aim(self, dt):
-        keys = CONTROLS[self.kicker]
+        keys = self.keys_for(self.kicker)
         dx = (keys['right'] in self.held) - (keys['left'] in self.held)
         dy = (keys['up'] in self.held) - (keys['down'] in self.held)
         mx, my = self.aim_limits()
@@ -1322,7 +1452,7 @@ class Game:
                 if ttb <= (0.1 if self.ai_stretch == 'good' else 0.35):
                     self._stretch()
         if self.phase == 'flight' and self.forced is None and self.is_human(ks):
-            k = CONTROLS[ks]
+            k = self.keys_for(ks)
             side = (k['right'] in self.held) - (k['left'] in self.held)
             if side:
                 self.keeper.parry_mode, self.keeper.parry_side = 'wide', side
@@ -1350,6 +1480,8 @@ class Game:
             elif ev == 'parry' and self._parry is None:
                 self._parry = (self.keeper.parry_mode, self.keeper.parry_side)
         self._frame_events = events
+        if any(e in ('post', 'bar', 'catch', 'parry', 'goal') for e in events):
+            self._rec_ev = True
         if self.phase == 'flight' and self.kick.outcome is not None:
             self.on_outcome(*self.kick.outcome)
 
@@ -1614,6 +1746,13 @@ class Game:
 
     def after_result(self):
         self._celebrate_effect()
+        # Party games move on to the next pairing only now, after the result was shown
+        # under the right names; whoever steps in starts with a clear head
+        for s in self.comp.advance():
+            self.nerves[s] = 0.0
+            self.keeper_conf[s] = 0
+            self.saves_made[s] = 0
+            self.goals_in_row[s] = 0
         if self.comp.finished:
             self.start_replay()
             if not self.stats_saved and self.playback is None:
@@ -1839,20 +1978,22 @@ class Game:
     @staticmethod
     def read_duel(path):
         try:
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
-            kicks = data['kicks']
-            ok = isinstance(kicks, list) and kicks and all(
-                k['shot']['kind'] in C.SHOT_TYPES and len(k['shot']['target']) == 2 for k in kicks)
-            return data if ok and len(data['kit']['shirt']) == 3 else None
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, UnicodeDecodeError):
             return None
+        return valid_duel(data)
 
     def load_duel(self, data):
+        data = valid_duel(data)
+        if data is None:
+            self.toast = ('That duel file is damaged or not a duel', self.clock)
+            return False
         self.duels = [('challenge', data)]
         self.ghost_i = 0
         self.mode = 'ghost'
         self.start_match()
+        return True
 
     # ------------------------------------------------------- training helpers
     def preview_path(self):
@@ -1890,7 +2031,7 @@ class Game:
             if fig.signature == 'stance' and self.phase == 'aim':
                 state['stance'] = True
         if self.phase == 'walk':
-            r = min(1.0, self.phase_t / WALK_TIME)
+            r = min(1.0, self.phase_t / self.walk_len)
             wx, wz = walk_from()
             state['pos'] = (_lerp(wx, sx, r), _lerp(wz, sz, r))
             state['yaw'] = math.degrees(math.atan2(-(sx - wx), -(sz - wz)))
@@ -1975,7 +2116,7 @@ class Game:
         fig = self.comp.figure(self.keeper_side(), True)
         if fig is None or self.keeper.committed():
             return None
-        if self.phase == 'walk' and 1.0 < self.phase_t < 2.6:
+        if self.phase == 'walk' and 0.28 * self.walk_len < self.phase_t < 0.72 * self.walk_len:
             return fig.mannerism
         if self.phase in ('ritual', 'aim') and (fig.signature == 'legs' or fig.persona == 'dancer'):
             return 'legs'
@@ -1985,7 +2126,7 @@ class Game:
         """The captain walking with a nervous taker for the first part of the walk."""
         if self.captain is None or self.phase != 'walk':
             return None
-        r = min(1.0, self.phase_t / WALK_TIME)
+        r = min(1.0, self.phase_t / self.walk_len)
         wx, wz = walk_from()
         sx, sz = kicker_start(self.runup, self.left_foot())
         t = min(r, 0.55)
@@ -2145,7 +2286,7 @@ class Game:
     def current_view(self):
         if self.phase == 'replay' and self.replay:
             frames = self.replay['frames']
-            i = min(len(frames) - 1, int(self.replay['t'] * 60.0))
+            i = min(len(frames) - 1, int(self.replay['t'] * REPLAY_FPS))
             return frames[i]
         return self.view()
 
@@ -2176,16 +2317,31 @@ class Game:
             else:
                 self._select_key(key)
                 return None
+        if self.confirm_quit:
+            # "Quit the game?" is up: ENTER or Y quits, anything else goes back
+            self.confirm_quit = False
+            return 'quit' if key in ('\r', 'y') else None
         if key == '\x1b':
             if self.rebind is not None:
-                self.rebind = None
-                return None
-            if self.photo:
+                self.cancel_rebind()
+            elif self.photo:
                 self.photo = False
-                return None
-            return 'quit'
+            elif self.show_help:
+                self.show_help = False
+            elif self.ui == 'lan':
+                self.ui = 'menu'                    # the app stops waiting for the other player
+            elif self.ui == 'menu':
+                if self.show_achievements:
+                    self.show_achievements = False
+                else:
+                    self.confirm_quit = True
+            else:
+                self.set_paused(not self.paused)  # ESC is the pause menu; quitting is in there
+            return None
         if self.rebind is not None:
             self._rebind_key(key)
+            return None
+        if self.ui == 'lan':
             return None
         self.held.add(key)
         if key == 'n' and self.audio:
@@ -2215,7 +2371,10 @@ class Game:
                 self.camera = CAMERAS[(CAMERAS.index(self.camera) + 1) % len(CAMERAS)]
             return None
         if key == 'p' and self.phase not in ('ended', 'replay'):
-            self.paused = not self.paused
+            self.set_paused(not self.paused)
+            return None
+        if key == 'q' and self.paused:
+            self.confirm_quit = True
             return None
         if key == 'r' and (self.paused or self.phase in ('ended', 'replay')):
             if self.playback is not None:
@@ -2226,7 +2385,7 @@ class Game:
         if key == 'm' and (self.paused or self.phase in ('ended', 'replay')):
             self.to_menu()
             return None
-        if self.phase == 'replay' and key in (' ', '\r'):
+        if self.phase == 'replay' and key in SKIP_KEYS:
             self.phase = 'ended'
             return None
         if self.phase == 'ended':
@@ -2280,46 +2439,67 @@ class Game:
     def key_up(self, key):
         self.held.discard(key)
 
+    def release_keys(self):
+        """Forget held keys: the window lost focus, or the screen changed under them."""
+        self.held.clear()
+
+    def set_paused(self, on):
+        self.paused = on
+        self.release_keys()
+
     def set_aim(self, slot, x, y):
         """Absolute aim from the phone controller."""
         if self.phase in ('aim', 'runup') and self.kicker == slot and self.is_human(slot):
             mx, my = self.aim_limits()
             self.aim = [physics.clamp(x, -mx, mx), physics.clamp(y, 0.12, my)]
 
+    def is_skip(self, key):
+        """SPACE, ENTER or a human's shoot key skips a cutscene."""
+        return key in SKIP_KEYS or any(key == self.keys_for(s)['shoot'] for s in ('p1', 'p2') if self.is_human(s))
+
     def _match_key(self, key):
-        if self.phase == 'intro':
-            if key in (' ', '\r'):
+        skip = self.is_skip(key)
+        if self.phase in ('intro', 'pre'):
+            if skip:
                 self.start_kick()
             return
         if self.phase == 'toss':
             self._toss_key(key)
             return
         if self.phase == 'interlude':
-            if key in (' ', '\r'):
+            if skip:
                 self._next_tie()
             return
         if self.phase == 'walk':
-            if key in (' ', '\r'):
+            if skip:
                 self.walk_skip = True
             return
         if self.phase == 'ritual':
-            self._ritual_key(key)
+            if not self._ritual_key(key) and skip:
+                self._whistle()                     # skip the ball being placed
             return
         if self.phase == 'rebound':
             self._rebound_key(key)
             return
-        if self.phase == 'result' and self.result and self.result[0] and self.is_human(self.kicker):
-            if key in (CONTROLS[self.kicker]['special'], CONTROLS[self.kicker]['extra2']):
+        if self.phase == 'var':
+            if skip and self.phase_t > 0.3:
+                self._resolve_var()
+            return
+        if self.phase == 'result':
+            if self.result and self.result[0] and self.is_human(self.kicker) and \
+                    key in (self.keys_for(self.kicker)['special'], self.keys_for(self.kicker)['extra2']):
                 i = CELEB_CYCLE.index(self.celebration) if self.celebration in CELEB_CYCLE else 0
-                step = 1 if key == CONTROLS[self.kicker]['special'] else -1
+                step = 1 if key == self.keys_for(self.kicker)['special'] else -1
                 self.celebration = CELEB_CYCLE[(i + step) % len(CELEB_CYCLE)]
                 self.phase_t = min(self.phase_t, 1.2)       # time to enjoy it
+            elif skip and self.phase_t > 0.5:
+                self.after_result()
             return
         kicker, keeper_side = self.kicker, self.keeper_side()
         if self.phase not in ('aim', 'runup', 'flight') or self.forced:
             return
         if self.is_human(kicker) and self.phase != 'flight':
-            k = CONTROLS[kicker]
+            k = self.keys_for(kicker)
             if key == k['shoot']:
                 if self.phase == 'aim':
                     self.begin_runup()
@@ -2345,7 +2525,7 @@ class Game:
                 self.gaze = GAZES[(GAZES.index(self.gaze) + 1) % len(GAZES)]
                 return
         if self.is_human(keeper_side) and not getattr(self.comp, 'no_keeper', False):
-            k = CONTROLS[keeper_side]
+            k = self.keys_for(keeper_side)
             if key == k['shoot'] and self.phase == 'flight' and self.keeper.committed():
                 self._stretch()
                 return
@@ -2385,26 +2565,39 @@ class Game:
                         self.keeper.commit(0, True, 0.0)
 
     def _ritual_key(self, key):
-        if self.is_human(self.kicker) and key == CONTROLS[self.kicker]['shoot']:
+        """The ritual's own keys. Returns True when the key was one of them."""
+        if self.is_human(self.kicker) and key == self.keys_for(self.kicker)['shoot']:
             self._take_time()
+            return True
         ks = self.keeper_side()
-        if self.is_human(ks) and key == CONTROLS[ks]['extra2']:
+        if self.is_human(ks) and key == self.keys_for(ks)['extra2']:
             self._take_ball(ks)
+            return True
+        return False
 
     def _toss_key(self, key):
         w = self.toss_winner
-        if self.toss_stage == 'end' and self.is_human(w):
-            k = CONTROLS[w]
-            if key in (k['left'], k['right']):
+        skip = self.is_skip(key)
+        if self.toss_stage == 'end':
+            k = self.keys_for(w)
+            if self.is_human(w) and key in (k['left'], k['right']):
                 self._choose_end(w if key == k['left'] else other(w))
+            elif skip:
+                self._choose_end(w)                 # skipping: towards your own fans
         elif self.toss_stage == 'sub':
+            touched = [s for s in ('p1', 'p2') if self.lineup[s]['touched']]
             for slot in ('p1', 'p2'):
                 if self.controller(slot):
                     self._prep_key(slot, key)
+            # Nobody busy with a line-up (or all of them just said ready): get on with it
+            if skip and not self._lineup_busy() and (not touched or all(self.lineup[s]['ready'] for s in touched)):
+                self._end_prep()
+        elif self.toss_stage == 'first' and skip:
+            self.start_kick()
 
     def _prep_key(self, slot, key):
         """Before the shootout: keeper sub and style, fresh legs, and the order of takers."""
-        k = CONTROLS[slot]
+        k = self.keys_for(slot)
         lu = self.lineup[slot]
         order = self.comp.order.get(slot)
         if key == k['extra1']:
@@ -2431,10 +2624,10 @@ class Game:
         rb = self.rebound
         if rb['done']:
             return
-        if self.is_human(self.kicker) and key == CONTROLS[self.kicker]['shoot']:
+        if self.is_human(self.kicker) and key == self.keys_for(self.kicker)['shoot']:
             self._follow_up()
         elif self.is_human(self.keeper_side()):
-            k = CONTROLS[self.keeper_side()]
+            k = self.keys_for(self.keeper_side())
             if key in (k['left'], k['right'], k['down'], k['up']):
                 rb['smother'] = True
 
@@ -2456,6 +2649,7 @@ class Game:
 
     def open_select(self):
         self.ui = 'select'
+        self.release_keys()
         self.select = dict(step=0, picked={}, cursor=0, filter='all', plan=self.pick_plan())
 
     def select_list(self):
@@ -2536,6 +2730,7 @@ class Game:
     # ------------------------------------------------------- create-a-player
     def open_create(self, back):
         self.ui = 'create'
+        self.release_keys()
         self.create = dict(ch=CH.blank_character(), field=0, typing=False, back=back)
 
     def _create_key(self, key):
@@ -2634,36 +2829,56 @@ class Game:
 
     # ------------------------------------------------------------------- menu
     def _menu_key(self, key):
+        # Menu shortcuts are function keys and arrows, never a player's letter keys
         if self.show_achievements:
-            if key in ('l', '\r', ' '):
+            if key in (MENU_KEYS['achievements'], '\r', ' '):
                 self.show_achievements = False
             return
         rows = self.menu_rows()
         self.menu_focus = min(self.menu_focus, len(rows) - 1)
-        if key in ('w', 's'):
-            self.menu_focus = (self.menu_focus + (1 if key == 's' else -1)) % len(rows)
-        elif key in ('a', 'd'):
-            self.menu_change(rows[self.menu_focus], 1 if key == 'd' else -1)
+        if key in ('w', 's', 'UP', 'DOWN'):
+            self.menu_focus = (self.menu_focus + (1 if key in ('s', 'DOWN') else -1)) % len(rows)
+        elif key in ('a', 'd', 'LEFT', 'RIGHT'):
+            self.menu_change(rows[self.menu_focus], 1 if key in ('d', 'RIGHT') else -1)
         elif key in ('\r', ' '):
             self.start_match()
-        elif key == 'k':
-            self.rebind = ('p1', 0)
-        elif key == 'l':
+        elif key == MENU_KEYS['rebind']:
+            self.start_rebind()
+        elif key == MENU_KEYS['achievements']:
             self.show_achievements = True
+
+    def start_rebind(self):
+        from . import controls
+        self._rebind_backup = controls.snapshot()
+        self.rebind = ('p1', 0)
+
+    def cancel_rebind(self):
+        from . import controls
+        if self._rebind_backup is not None:
+            controls.restore(self._rebind_backup)
+        self._rebind_backup = None
+        self.rebind = None
 
     def _rebind_key(self, key):
         from . import controls
         slot, i = self.rebind
         action = controls.ACTIONS[i]
+        taken = controls.owner(key)
+        old = controls.CONTROLS[slot][action]
         if not controls.bind(slot, action, key):
-            self.toast = (f"'{controls.key_name(key)}' is taken or reserved", self.clock)
+            self.toast = (f"'{controls.key_name(key)}' is reserved for the game", self.clock)
             return
+        if taken is not None and taken != (slot, action):
+            who = 'P1' if taken[0] == 'p1' else 'P2'
+            self.toast = (f"Swapped: {who} {controls.ACTION_LABELS[taken[1]].lower()} is now "
+                          f"{controls.key_name(old)}", self.clock)
         i += 1
         if i >= len(controls.ACTIONS):
             if slot == 'p1':
                 self.rebind = ('p2', 0)
             else:
                 self.rebind = None
+                self._rebind_backup = None
                 controls.save()
                 self.toast = ('Controls saved', self.clock)
         else:
@@ -2692,6 +2907,11 @@ class Game:
             self.teams[slot] = i
         elif row == 'hidden':
             self.hidden_aim = not self.hidden_aim
+            if self.hidden_aim:
+                self.toast = ("Hidden aim: the reticle is hidden from both players. Aim with the phone controller, "
+                              "or feel it through pad rumble", self.clock)
+        elif row == 'pacing':
+            self.pacing = cycle(PACINGS, self.pacing)
         elif row == 'scenario':
             self.scenario = (self.scenario + step) % len(SCENARIOS)
         elif row == 'party_type':
@@ -2737,6 +2957,7 @@ class Game:
     def _begin_match(self):
         self.ui = 'playing'
         self.playback = None
+        self.release_keys()
         if self.mode == 'famous':
             sc = SCENARIOS[self.scenario]
             if sc['role'] == 'keep' and self.camera == 'broadcast':
@@ -2747,6 +2968,7 @@ class Game:
     def to_menu(self):
         self.ui = 'menu'
         self.paused = False
+        self.release_keys()
         self.photo = False
         self.playback = None
         self._loops(False)

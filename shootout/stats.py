@@ -3,6 +3,8 @@
 import json
 import os
 
+from . import storage
+
 PATH = os.path.join(os.path.expanduser('~'), '.penalty_shootout_stats.json')
 FIELDS = ('matches', 'wins', 'kicks', 'goals', 'faced', 'saves')
 # Goal mouth split into 3 columns x 2 rows for the training heatmap
@@ -49,15 +51,14 @@ def add_zone(data, aim, scored):
 
 
 def save(data, path=PATH):
-    try:
-        with open(path, 'w') as f:
-            json.dump(data, f)
-    except OSError:
-        pass
+    return storage.write_json(path, data)
 
 
 def summary(data):
     if not data['kicks'] and not data['faced']:
+        if data['matches']:
+            # Manager matches count, though nobody took a kick themselves
+            return f"Career  P1: {data['wins']}/{data['matches']} shootouts won"
         return 'No career stats yet: take your first shootout!'
     pct = 100.0 * data['goals'] / data['kicks'] if data['kicks'] else 0.0
     return (f"Career  P1: {data['wins']}/{data['matches']} shootouts won  |  "

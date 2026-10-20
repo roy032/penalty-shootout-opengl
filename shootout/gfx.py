@@ -65,14 +65,19 @@ def load_quality(path=None):
         return 'high'
 
 
-def save_quality(q, path=None):
+def saved_quality(path=None):
+    """The quality the player picked before, or None on a first launch."""
     try:
-        path = path or SETTINGS_FILE
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(dict(quality=q), f)
-    except OSError:
-        pass
+        with open(path or SETTINGS_FILE) as f:
+            q = json.load(f).get('quality')
+        return q if q in QUALITIES else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def save_quality(q, path=None):
+    from .storage import write_json
+    write_json(path or SETTINGS_FILE, dict(quality=q))
 
 
 def quality():
@@ -1019,7 +1024,8 @@ def end_frame(post):
     gain, lift, sat, contrast = GRADES.get(post.get('grade', 'night'), GRADES['night'])
     haze = list(post.get('haze') or [])[:2] if full else []
     haze += [(0.0, 0.0, 0.0, 0.0)] * (2 - len(haze))
-    blur = post.get('blur', 0.0) if full and state.get('hist_ok') else 0.0
+    # Motion blur needs last frame's picture: the first blurred frame only stores it
+    blur = post.get('blur', 0.0) if full and state.get('hist_frame') == state['frame'] - 1 else 0.0
     vals = dict(u_post=(1 if full else 0,), u_bloomK=(float(post.get('bloom', 0.5)),),
                 u_vignette=(float(post.get('vignette', 0.35)),), u_mb=(float(blur),),
                 u_focus=(float(post.get('focus', 0.0)) if full else 0.0,), u_range=(float(post.get('range', 2.0)),),
@@ -1031,13 +1037,13 @@ def end_frame(post):
         _set('composite', k, *v)
     _quad()
     glUseProgram(0)
-    if full:
-        # Keep this frame for motion blur on the next
+    if full and post.get('blur'):
+        # Keep this frame for motion blur on the next (only while a rocket is flying)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, _res['hist_tex'])
         glReadBuffer(GL_BACK)
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h)
-        state['hist_ok'] = True
+        state['hist_frame'] = state['frame']
     for i in range(5, -1, -1):
         glActiveTexture(GL_TEXTURE0 + i)
         glBindTexture(GL_TEXTURE_2D, 0)

@@ -27,7 +27,8 @@ a = Analysis(
     hiddenimports=[
         'OpenGL.platform.win32', 'OpenGL.arrays.ctypesarrays', 'OpenGL.arrays.ctypesparameters',
         'OpenGL.arrays.ctypespointers', 'OpenGL.arrays.lists', 'OpenGL.arrays.numbers', 'OpenGL.arrays.strings',
-        'OpenGL.arrays.nones', 'OpenGL.arrays.buffers',
+        'OpenGL.arrays.nones', 'OpenGL.arrays.buffers', 'OpenGL.WGL.EXT.swap_control',
+        'PIL.ImageFont', 'PIL.ImageDraw',
         'pyttsx3.drivers', 'pyttsx3.drivers.sapi5',
     ],
     excludes=['tkinter', 'pytest'],

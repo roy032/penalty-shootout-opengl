@@ -57,8 +57,11 @@ def test_full_pvc_match_finishes_with_replay(tmp_path):
 
 def test_pvp_hidden_aim(tmp_path):
     g = make_game(tmp_path, mode='pvp')
+    assert not g.hidden_aim                     # off by default: one keyboard would aim blind
     while g.phase != 'aim':
         run(g, 0.5)
+    assert g.aim_visible()
+    g.hidden_aim = True
     assert not g.aim_visible()
     g.hidden_aim = False
     assert g.aim_visible()
@@ -227,7 +230,11 @@ def test_rebind_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(controls, 'PATH', str(tmp_path / 'keys.json'))
     g = Game(audio=None, rng=random.Random(1), stats_path=str(tmp_path / 's.json'))
     try:
-        g.key_down('k')
+        g.key_down('k')                         # Player 2's key: no longer a menu shortcut
+        assert g.rebind is None and not g.show_achievements
+        g.key_down('l')
+        assert not g.show_achievements
+        g.key_down('F2')
         assert g.rebind == ('p1', 0)
         g.key_down('p')                         # reserved: refused
         assert g.rebind == ('p1', 0)
@@ -235,26 +242,69 @@ def test_rebind_keys(tmp_path, monkeypatch):
         assert CONTROLS['p1']['left'] == 'b' and g.rebind == ('p1', 1)
         g.key_down('d')                         # still P1's 'right': allowed for that action
         assert g.rebind == ('p1', 2)
-        g.key_down('\x1b')
+        g.key_down('\x1b')                      # cancel: the old bindings come back
+        assert g.rebind is None and CONTROLS['p1']['left'] == 'a'
+    finally:
+        controls.reset()
+
+
+def test_rebind_swaps_keys_and_takes_arrows(tmp_path, monkeypatch):
+    monkeypatch.setattr(controls, 'PATH', str(tmp_path / 'keys.json'))
+    g = Game(audio=None, rng=random.Random(1), stats_path=str(tmp_path / 's.json'))
+    try:
+        g.key_down('F2')
+        g.key_down('j')                         # P2's left: the two swap
+        assert CONTROLS['p1']['left'] == 'j' and CONTROLS['p2']['left'] == 'a'
+        assert 'Swapped' in g.toast[0]
+        g.key_down('RIGHT')                     # arrow keys can be bound
+        assert CONTROLS['p1']['right'] == 'RIGHT'
+        for _ in range(len(controls.ACTIONS) * 2 - 2):
+            g.key_down(CONTROLS[g.rebind[0]][controls.ACTIONS[g.rebind[1]]])   # keep the rest
         assert g.rebind is None
+        used = [k for keys in CONTROLS.values() for k in keys.values()]
+        assert len(used) == len(set(used))
+        controls.reset()
+        controls.load()                         # saved, swap and arrow included
+        assert CONTROLS['p1']['right'] == 'RIGHT' and CONTROLS['p2']['left'] == 'a'
     finally:
         controls.reset()
 
 
 def test_phone_controller_needs_the_pin(tmp_path):
     from shootout.phone import PhoneServer
-    server = PhoneServer(port=0, pin='1234', host='127.0.0.1')
+    server = PhoneServer(port=0, pin='123456', host='127.0.0.1')
     try:
-        assert not server.accept({'pin': '0000', 'slot': 'p1', 'aim': [1, 1]})
-        assert server.accept({'pin': '1234', 'slot': 'p1', 'aim': [1.5, 2.0]})
-        assert server.accept({'pin': '1234', 'slot': 'p1', 'action': 'shoot'})
-        assert not server.accept({'pin': '1234', 'slot': 'p1', 'action': 'quit'})
+        assert not server.accept({'pin': '000000', 'slot': 'p1', 'aim': [1, 1]})
+        assert server.accept({'pin': '123456', 'slot': 'p1', 'aim': [0.75, 0.5]})
+        assert server.accept({'pin': '123456', 'slot': 'p1', 'action': 'shoot'})
+        assert not server.accept({'pin': '123456', 'slot': 'p1', 'action': 'quit'})
+        assert not server.accept({'pin': '123456', 'slot': 'p1', 'aim': ['nan', 0.5]})
+        assert not server.accept({'pin': '123456', 'slot': 'p1', 'aim': [float('inf'), 0.5]})
         g = make_game(tmp_path, mode='pvp')
         while g.phase != 'aim':
             run(g, 0.5)
         server.commands.queue.clear()
-        server.accept({'pin': '1234', 'slot': g.kicker, 'aim': [1.5, 2.0]})
+        server.accept({'pin': '123456', 'slot': g.kicker, 'aim': [0.75, 0.5]})
         server.apply(g)
-        assert g.aim == [1.5, 2.0]
+        assert g.aim == [C.GOAL_HALF_WIDTH / 2, C.GOAL_HEIGHT / 2]
     finally:
         server.stop()
+
+
+def test_phone_aim_fits_the_goal_and_locks_out_guessers(tmp_path):
+    from shootout.phone import MAX_TRIES, PhoneServer
+    server = PhoneServer(port=0, pin='654321', host='127.0.0.1')
+    try:
+        g = make_game(tmp_path, mode='pvp', variant='futsal')
+        while g.phase != 'aim':
+            run(g, 0.5)
+        server.accept({'pin': '654321', 'slot': g.kicker, 'aim': [1.0, 1.0]}, 'a')    # top corner
+        server.apply(g)
+        assert g.aim == [C.GOAL_HALF_WIDTH, C.GOAL_HEIGHT] and C.GOAL_HALF_WIDTH == 1.5
+        for _ in range(MAX_TRIES):
+            assert not server.accept({'pin': '111111', 'slot': 'p1', 'action': 'shoot'}, 'b')
+        assert not server.accept({'pin': '654321', 'slot': 'p1', 'action': 'shoot'}, 'b')   # locked out
+        assert server.accept({'pin': '654321', 'slot': 'p1', 'action': 'shoot'}, 'a')
+    finally:
+        server.stop()
+        C.apply_variant('stadium')

@@ -89,6 +89,11 @@ class Competition:
     def in_sudden_death(self):
         return False
 
+    def advance(self):
+        """Move on to the next pairing once the last kick's result has been
+        shown. Returns the slots now taken by someone new."""
+        return ()
+
     def summary_line(self):
         return ''
 
@@ -251,6 +256,8 @@ class KingOfTheGoal(Competition):
         self.round = 0                 # index of the player in goal
         self.order = []
         self.turn = 0
+        self.pending = False           # a kick has been recorded; the next pairing waits for advance()
+        self.complete = False
         super().__init__({'p1': '', 'p2': ''}, {'p1': C.KITS['p1'], 'p2': C.KITS['p2']},
                          {'p1': 'human', 'p2': 'human'})
         self._set_round()
@@ -269,7 +276,7 @@ class KingOfTheGoal(Competition):
 
     @property
     def finished(self):
-        return self.round >= len(self.players)
+        return self.complete
 
     @property
     def winner(self):
@@ -288,24 +295,33 @@ class KingOfTheGoal(Competition):
             self.points[kicker] += 1
         else:
             self.points[self.round] += 1
+        # The names stay on the kick just taken until its result has been shown
+        self.pending = True
+        if self.turn + 1 >= len(self.order) and self.round + 1 >= len(self.players):
+            self.complete = True
+
+    def advance(self):
+        if not self.pending or self.complete:
+            return ()
+        self.pending = False
         self.turn += 1
         if self.turn >= len(self.order):
             self.round += 1
-            if not self.finished:
-                self._set_round()
-        else:
-            self._set_slots()
+            self._set_round()
+            return ('p1', 'p2')                  # a new keeper too
+        self._set_slots()
+        return ('p1',)
 
     def table(self):
         return sorted(zip(self.players, self.points, self.colours), key=lambda r: -r[1])
 
     def player(self, slot):
-        if not self.chars or self.finished:
+        if not self.chars:
             return None
         return self.chars[self.order[self.turn]] if slot == 'p1' else None
 
     def keeper_player(self, slot):
-        if not self.chars or self.finished:
+        if not self.chars:
             return None
         return self.chars[self.round] if slot == 'p2' else None
 
@@ -332,6 +348,7 @@ class Knockout(Competition):
         self.champion = None
         self.history = []                   # (winner name, loser name)
         self.tie = None
+        self.pending = False                # a tie is won; the next one waits for advance()
         super().__init__({'p1': '', 'p2': ''}, {'p1': C.KITS['p1'], 'p2': C.KITS['p2']},
                          {'p1': 'human', 'p2': 'human'})
         self._next_tie()
@@ -369,8 +386,18 @@ class Knockout(Competition):
             w, lost = (a, b) if won == 'p1' else (b, a)
             self.history.append((self.players[w], self.players[lost]))
             self.winners.append(w)
-            self._next_tie()
+            if len(self.queue) < 2 and len(self.winners) + len(self.queue) == 1:
+                self.champion = w                # that was the final
+            else:
+                self.pending = True              # the next tie starts after this result is shown
         return won
+
+    def advance(self):
+        if not self.pending:
+            return ()
+        self.pending = False
+        self._next_tie()
+        return ('p1', 'p2')
 
     def stakes(self, slot):
         return self.tie.stakes(slot) if self.tie else None
@@ -774,14 +801,15 @@ class ChallengeComp(Competition):
         return f"{self.spec['label']}: {self.score}"
 
 
+# {action} is filled in with the key the player has bound to it
 TUTORIAL = [
-    ('aim', "Aim at the top-left corner with W and A. Press SPACE to start the run-up, then SPACE again to "
-            "stop the power bar."),
+    ('aim', "Aim at the top-left corner with {up} and {left}. Press {shoot} to start the run-up, then {shoot} "
+            "again to stop the power bar."),
     ('power', 'Stop the power bar in the green zone: not too soft, not too hard.'),
-    ('type', 'Press E to change the shot type. Pick the Curler and shoot.'),
-    ('disguise', 'Press Q until it says Disguised run-up, then score. The keeper cannot read you.'),
+    ('type', 'Press {special} to change the shot type. Pick the Curler and shoot.'),
+    ('disguise', 'Press {extra1} until it says Disguised run-up, then score. The keeper cannot read you.'),
     ('settle', 'After the whistle, wait until the ring says Settled before you start the run-up.'),
-    ('dive', 'Now you are in goal. Pick a dive with A or D BEFORE the kick (W for a high dive).'),
+    ('dive', 'Now you are in goal. Pick a dive with {left} or {right} BEFORE the kick ({up} for a high dive).'),
     ('save', 'Last one: make a save. Watch the kicker\'s hips: they open towards where he is aiming.'),
 ]
 
@@ -807,8 +835,13 @@ class TutorialComp(Competition):
     def winner_name(self):
         return 'TUTORIAL COMPLETE'
 
-    def instruction(self):
-        return None if self.finished else TUTORIAL[self.step][1]
+    def instruction(self, keys=None):
+        """The coach's words for this step, naming the keys in keys (action -> key)."""
+        if self.finished:
+            return None
+        from .controls import CONTROLS, key_name
+        keys = keys or CONTROLS['p1']
+        return TUTORIAL[self.step][1].format(**{a: key_name(k) for a, k in keys.items()})
 
     def next_kicker(self):
         return 'p1'

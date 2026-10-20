@@ -4,6 +4,42 @@ A 3D penalty shootout written in Python with PyOpenGL and GLUT. Play against the
 
 ![Aiming at the top corner](docs/screenshot-aim.png)
 
+## Ultimate Football (new, in progress)
+
+`football_game.py` is the start of a full football game built on [Panda3D](https://www.panda3d.org/), using the same roster of legends, icons, current stars and fantasy players. It runs alongside the penalty game, which stays available from its menu.
+
+```bash
+python -m pip install panda3d numpy
+python football_game.py
+```
+
+What is in this first version:
+
+- **Formats**: cage 5-a-side with rebound walls (the default), 5-a-side, 7-a-side and 11-a-side.
+- **Teams**: Legends, All Stars, Queens, Pioneers, Myths and Cult Heroes, built from the characters, plus five club sides.
+- **Modes**: 1 player against the computer, 2 players head to head, 2 players on the same team, a penalty shootout, or watching CPU against CPU. Draws go to penalties.
+- **Difficulty**: Beginner, Amateur, Pro, World Class and Legendary. **Style**: Arcade, or Authentic (slower, less accurate, with offside on full pitches).
+- **Football**: assisted passes, through balls, lobs and crosses; shots with power and placement, finesse curlers and chips; headers and first-time volleys; skill moves; sprinting knocks the ball ahead. Defending uses press and tackle, slide tackles, and calling a second man. There are fouls, cards, free kicks, penalties, corners, throw-ins and goal kicks.
+- **Team AI**: the team keeps its shape and presses, marks, makes support runs, plays passes based on the passing lanes, and has keepers who position themselves, dive, catch, parry, rush out and distribute.
+- **Presentation**: a floodlit stadium with crowds that react, a broadcast camera (plus tactical, end-to-end and third-person cameras), goal replays, captions from the commentary, a radar, and a scoreboard and HUD that scale with the window.
+
+**Controls** (both players can share a keyboard, and gamepads work as well):
+
+| Action | Player 1 | Player 2 | Gamepad |
+|---|---|---|---|
+| Move | W A S D | Arrows | Left stick or D-pad |
+| Pass, or press and tackle when defending (hold to press) | J | / | A |
+| Shoot (hold for power), or slide tackle | K | . | B |
+| Through ball, or call a team-mate to press | L | , | Y |
+| Lob or cross (with finesse held: chip shot) | I | ; | X |
+| Sprint | Left Shift | Right Shift | RT |
+| Switch player | Q | Right Ctrl | LB |
+| Finesse (hold while shooting to curl it) | E | ' | RB |
+| Skill move | Space | Enter | LT |
+| Pause | Esc | | Start |
+
+Keys can be changed under Controls; a key that is already in use swaps with the other action. Settings are saved in `~/.ultimate_football/`.
+
 ## What makes it play like a real shootout
 
 **Taking the kick**
@@ -72,7 +108,7 @@ Set **Characters** in the menu to *Club* (generated squads), *Legends* (drafted 
 
 ## Graphics
 
-Set **Graphics** in the menu to *Low*, *Medium* or *High* (saved in `~/.penalty_shootout/graphics.json`). Low is the classic fixed-function look and runs anywhere. Medium and High draw through GLSL shaders, and if the shaders or framebuffers are not available the game drops back to Low and says why.
+Set **Graphics** in the menu to *Low*, *Medium* or *High* (saved in `~/.penalty_shootout/graphics.json`). On the first launch the game times a few frames and picks the setting for your computer. Low is the classic fixed-function look and runs anywhere. Medium and High draw through GLSL shaders, and if the shaders or framebuffers are not available the game drops back to Low and says why.
 
 - **Lighting and shadows.** Per-pixel lighting with a sky-and-grass ambient, specular highlights on boots, the ball, the frame and wet grass, a broadcast rim light on the players, and shadow maps from the sun or the main floodlight (four soft floodlight shadows at night).
 - **Anti-aliasing and post-processing.** A multisampled frame, then bloom round the floodlights, LEDs and auras, a vignette, colour grading per weather and time of day, depth of field on the taker's close-up and on the walk, motion blur on a rocket, and heat haze round the strongest auras (High).
@@ -91,18 +127,23 @@ Set **Graphics** in the menu to *Low*, *Medium* or *High* (saved in `~/.penalty_
 
 Requires Python 3.8+ and an OpenGL-capable system with GLUT (freeglut).
 
+1. Install freeglut (see **GLUT library** below).
+2. Install the Python packages and start the game:
+
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python penalty_shootout.py
 ```
 
-`pygame` is used for sound and gamepads. Without it the game runs silently and keyboard-only. `Pillow` is optional and turns exported clips into GIFs (without it, clips are saved as a folder of frames). `PyOpenGL_accelerate` is optional and can be installed separately for better performance.
+`pygame-ce` is used for sound and gamepads (the community edition of pygame: it has wheels for new Python versions, including 3.14 on Windows, where plain `pygame` fails to install). If you already have `pygame` installed, `pip uninstall pygame` first: the two share the `pygame` module name. Without it the game runs silently and keyboard-only. `Pillow` turns exported clips into GIFs and draws the HUD's text with a TrueType font that scales with the window (without it, clips are saved as a folder of frames and the HUD uses GLUT's bitmap fonts). `PyOpenGL_accelerate` is optional: `pip install PyOpenGL_accelerate` for a little more speed.
+
+The game turns off PyOpenGL's per-call error checking, which costs 12-20% of the CPU time. Set `SHOOTOUT_GL_DEBUG=1` to turn it back on when debugging the renderer. Frames are paced at 60 fps (with vsync where the driver allows), and `F11` switches to fullscreen and back.
 
 To watch a saved replay: `python penalty_shootout.py --replay ~/.penalty_shootout/replays/shootout-....json`
 
 To face a friend's ghost duel: `python penalty_shootout.py --duel duel-....json`
 
-**LAN play**: one player runs `python penalty_shootout.py --host` and the other `python penalty_shootout.py --join <host IP>` (add `:PORT` if the host used `--host PORT`; the default is 50505). Each of you plays with your own Player 1 keys. The host's settings are used, and the two games run in lockstep, so only key presses cross the network.
+**LAN play**: one player runs `python penalty_shootout.py --host` and the other `python penalty_shootout.py --join <host IP>` (add `:PORT` if the host used `--host PORT`; the default is 50505). The host's window shows the exact command for the friend to run while it waits, and `Esc` goes back to the menu. Each of you plays with your own Player 1 keys. The host's settings, team names and squads (with their form) are used, and the two games run in lockstep, so only key presses cross the network; after every kick the two games compare a checksum and say so if they ever drift apart. `Esc` pauses both screens; from the pause `M` leaves for the menu. If the other player leaves, the game says so and `M` takes you back to the menu.
 
 **GLUT library**
 
@@ -114,7 +155,11 @@ To face a friend's ghost duel: `python penalty_shootout.py --duel duel-....json`
 
 ## Controls
 
-**Menu**: `W`/`S` move, `A`/`D` change, `Enter`/`Space` kick off, `C` create a player, `K` rebind keys, `L` achievements. The mouse works too.
+**Menu**: `W`/`S` or the arrow keys move, `A`/`D` change, `Enter`/`Space` kick off, `C` create a player, `F2` rebind keys, `F3` achievements, `Esc` quit (it asks first). The mouse works too. The menu's shortcuts are function keys so they never clash with Player 2's letter keys.
+
+**Rebinding** (`F2`): press a key for each action in turn. A key already in use swaps: the other action gets the old key. The arrow keys can be bound. `Esc` cancels and puts the old keys back.
+
+**Pacing**: *Quick* in the menu shortens the toss, the walk, the ball placing, the result and the VAR check. Whatever the setting, `Space` or `Enter` skips any of them.
 
 **Match** (default keys; rebind them from the menu)
 
@@ -127,7 +172,9 @@ To face a friend's ghost duel: `python penalty_shootout.py --duel duel-....json`
 | Gaze, celebration (kicking) / fake lean, pick up the ball (keeping) | `X` | `M` |
 | Point to a corner (keeping) | `Z` | `,` |
 
-When keeping, left and right pick the dive, down stays in the centre and up toggles a high or low dive. During the dive, shoot is the fingertip stretch and a held direction steers a parry. After the walk, the kicker's shoot takes his time placing the ball and the keeper's fake key picks it up. At the toss, the same keys pick the order of takers (up/down to choose, left/right to move, shoot when ready), the keeper sub (`Q`), the keeper's style (`E`) and fresh subs (`X`). In party modes the kicker always uses Player 1's keys and the keeper Player 2's.
+When keeping, left and right pick the dive, down stays in the centre and up toggles a high or low dive. During the dive, shoot is the fingertip stretch and a held direction steers a parry. After the walk, the kicker's shoot takes his time placing the ball and the keeper's fake key picks it up. At the toss, the same keys pick the order of takers (up/down to choose, left/right to move, shoot when ready), the keeper sub (`Q`), the keeper's style (`E`) and fresh subs (`X`). Playing on your own you always use Player 1's keys (and pad 1), in goal too: training, the 90th-minute penalty, the ghost duel, the saves challenge and the tutorial. In party modes the kicker always uses Player 1's keys and the keeper Player 2's.
+
+While aiming, one line at the bottom shows the keys you need, plus one more control to learn each kick; `H` lists them all.
 
 | Key | Action |
 |-----|--------|
@@ -135,17 +182,18 @@ When keeping, left and right pick the dive, down stays in the centre and up togg
 | `T` | Trajectory preview on/off (training) |
 | `H` | How to play |
 | `N` | Sound on / off |
-| `P` | Pause (then `R` restart, `M` menu) |
+| `Esc` / `P` | Pause (then `R` restart, `M` menu, `Q` quit) |
 | `Y` | Photo mode (`A`/`D` orbit, `W`/`S` height, `Q`/`E` zoom, `F` filter, `G` focus, `B` frame, `T` name, `Enter` save) |
 | `V` / `F` / `G` | After the match: watch the replay, save a replay file, save a GIF clip |
 | `B` / `Tab` | After the match: share (ghost duel file, and the daily grid to the clipboard) / coach's report |
-| `Esc` | Quit |
+| `Space` / `Enter` | Skip a cutscene (toss, walk, ball placing, result, VAR, replay) |
+| `F11` | Fullscreen on / off |
 
 **Gamepads**: pad 1 plays as Player 1 and pad 2 as Player 2. Stick or d-pad aims and dives, A shoots, B is shot type / wave, X run-up / shuffle, Y gaze / fake, the right bumper points, Start pauses and Back changes camera. With hidden aim, the kicker's pad rumbles more towards the posts and the bar.
 
-**Phone controller**: switch it on in the menu and the game shows an address and a PIN. Open the address on a phone on the same network, enter the PIN, and aim by touch so your opponent cannot see where you are going. The server only runs while the setting is on.
+**Phone controller**: switch it on in the menu and the game shows an address and a six-digit PIN. Open the address on a phone on the same network, enter the PIN, and aim by touch so your opponent cannot see where you are going. The touch pad covers whatever goal is in use (park, futsal and beach goals too). The server only runs while the setting is on, a phone that gets the PIN wrong five times is locked out, and it shuts down when the game closes.
 
-**Hidden aim (PvP):** with both players on one screen, the kicker's reticle is hidden by default so the keeper cannot see it. You still move it from the centre with your aim keys, so you aim by feel (or with rumble, or on a phone). The keeper's choice is never shown in PvP.
+**Hidden aim (PvP):** off by default. Switch it on in the menu and the kicker's reticle is hidden on the shared screen so the keeper cannot see it: you still move it from the centre with your aim keys, so you aim by feel, with pad rumble, or on the phone controller. The keeper's choice is never shown in PvP.
 
 ## Mods
 
@@ -196,6 +244,7 @@ A list of `players` adds characters to the select screen under *Yours and mods*:
 │   ├── controls.py         # Key bindings (rebindable, saved to a file)
 │   ├── audio.py            # Procedural sound effects
 │   ├── stats.py            # Career stats and the training heatmap
+│   ├── storage.py          # Safe (atomic) saving of the settings and stats files
 │   ├── render.py           # 3D scene: players, ball, net, crowd, weather and effects
 │   ├── gfx.py              # Shaders, shadows, anti-aliasing, post-processing, quality setting
 │   ├── stadium.py          # The grounds: stands, roofs, LED boards, big screen, floodlights
@@ -206,7 +255,8 @@ A list of `players` adds characters to the select screen under *Yours and mods*:
 │   └── app.py              # GLUT window, cameras, the frame pipeline, clip export
 ├── penalty_shootout.spec   # PyInstaller recipe for the Windows build
 ├── tests/                  # pytest suite (runs without a display)
-└── tools/balance.py        # Conversion-rate simulation
+├── tools/balance.py        # Conversion-rate simulation
+└── tools/screenshot.py     # Renders a screen to a PNG at any window size
 ```
 
 Run the tests with `pip install pytest && pytest`.

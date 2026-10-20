@@ -1,8 +1,15 @@
+# Ultimate Football (football_game.py)
+panda3d>=1.10.14
+numpy>=1.24
+# Penalty Shootout (penalty_shootout.py)
 PyOpenGL>=3.1
-# Sound and gamepads (optional: the game runs silently, keyboard-only without it)
-pygame>=2.1
-# GIF export of replays (optional: frames are saved as images without it)
-Pillow>=9.0
+# Sound and gamepads (optional: the game runs silently, keyboard-only without it).
+# pygame-ce has wheels for new Python versions (plain pygame has none for 3.14 on Windows);
+# uninstall pygame first if you have it: both install the same 'pygame' module.
+pygame-ce>=2.4
+# GIF export of replays and scalable HUD text (optional: frames are saved as images
+# and the HUD uses GLUT's bitmap fonts without it)
+Pillow>=10.1
 # Spoken commentary (optional: captions only without it)
 # pyttsx3>=2.90
 # Optional speedups:

@@ -584,13 +584,8 @@ def load_custom(path):
 
 
 def save_custom(path):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(dict(players=[c for c in EXTRA if c['era'] == 'custom']), f, indent=1)
-        return True
-    except OSError:
-        return False
+    from .storage import write_json
+    return write_json(path, dict(players=[c for c in EXTRA if c['era'] == 'custom']), indent=1)
 
 
 RATING_BUDGET = 2.25          # composure + power + placement for a created player
