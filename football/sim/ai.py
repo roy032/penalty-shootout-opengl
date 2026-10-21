@@ -4,7 +4,7 @@ for everyone the human isn't steering."""
 
 import math
 
-from .player import norm
+from .player import ang_diff, norm
 from .styles import style_for
 
 
@@ -230,6 +230,9 @@ class TeamAI:
             p.sprint = d > 4.0
             if p is self.presser and d < 1.35 and p.tackle_cd <= 0:
                 rate = 0.55 + 0.6 * p.fb.defending * self.team.press
+                # A good defender doesn't dive in from behind: he gets goal-side first
+                if abs(ang_diff(math.atan2(p.pos[1] - owner.pos[1], p.pos[0] - owner.pos[0]), owner.facing)) > 2.0:
+                    rate *= 0.3
                 if m.rng.random() < rate * (p.brain_t + 0.1) * 2.0:
                     m.do_tackle(p)
             elif p is self.presser and 1.2 < d < 2.6 and p.tackle_cd <= 0:
@@ -311,7 +314,9 @@ class TeamAI:
         sx = xg * (0.55 ** block)
         dist = math.hypot(gx - p.pos[0], p.pos[1])
         if dist < pt.length * (0.42 + max(0.0, st['shoot']) * 0.3):
-            options.append((sx * 5.0 - 0.45 + st['shoot'] + rng.uniform(-noise, noise), 'shoot'))
+            # On small pitches everything is "in range", so work for a better chance
+            fussy = 0.5 if pt.length < 50 else 0.0
+            options.append((sx * 5.0 - 0.45 - fussy + st['shoot'] + rng.uniform(-noise, noise), 'shoot'))
         # Passing
         best_pass = None
         for mate in self.team.active():

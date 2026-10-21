@@ -127,6 +127,8 @@ class Match:
         if s['offside'] is None:
             s['offside'] = self.pitch.offside and s['preset'] == 'authentic'
         self.ball = Ball(self.pitch)
+        # Small goals are close: shots arrive sooner, so keepers get a little more reach
+        self.small_goal = 1.0 + max(0.0, (5.5 - self.pitch.goal_width)) * 0.3
         size = s['size']
         form = FORMATIONS[size]
         self.teams = []
@@ -765,11 +767,11 @@ class Match:
             ax, ay, az = k.pos[0], k.pos[1], 0.55 + k.z * 0.5
             hx, hy = ax + dx * span, ay + dy * span
             hz = hz + k.z * 0.5
-            reach = (0.3 + 0.14 * k.fb.keeping) * k.team.reach
+            reach = (0.3 + 0.14 * k.fb.keeping) * k.team.reach * self.small_goal
         else:
             ax, ay, az = k.pos[0], k.pos[1], 0.15
             hx, hy, hz = k.pos[0], k.pos[1], 2.25 + k.z
-            reach = (0.5 + 0.15 * k.fb.keeping) * k.team.reach
+            reach = (0.5 + 0.15 * k.fb.keeping) * k.team.reach * self.small_goal
         abx, aby, abz = hx - ax, hy - ay, hz - az
         L = abx * abx + aby * aby + abz * abz
         t = max(0.0, min(1.0, ((bx - ax) * abx + (by - ay) * aby + (bz - az) * abz) / L)) if L > 0 else 0.0
@@ -793,6 +795,19 @@ class Match:
             k.set_state('hold', 1.0e9)
             k.target = None
             self.emit('catch', who=self._idx(k), shot=shot, speed=sp)
+        elif shot and k.state == 'dive' and self.rng.random() < 0.45:
+            # Fingertips: round the post or over the bar, for a corner
+            pt = self.pitch
+            side = 1 if b.vel[1] >= 0 else -1
+            line_x = -k.team.attack * pt.half_length
+            back = 2.5 + sp * 0.08
+            t = max(0.15, abs(line_x - b.pos[0]) / back)
+            # Wide enough to clear the post by the time it reaches the line, or high enough to clear the bar
+            vy = side * max(3.0, (pt.goal_width / 2.0 + 1.0 - side * b.pos[1]) / t)
+            vz = max(2.0, (pt.goal_height + 0.6 - b.pos[2]) / t + 4.9 * t)
+            b.kick(-k.team.attack * back, vy, min(vz, 12.0))
+            k.touch_cd = 0.6
+            self.emit('parry', who=self._idx(k), shot=shot, speed=sp, tip=True)
         else:
             # Parry it away from goal, wide if possible
             away = k.team.attack
@@ -1122,7 +1137,7 @@ class Match:
         pt = self.pitch
         gx = p.team.opp_goal_x(pt)
         self._start_kick(p, 'header' if header else ('finesse' if style == 'finesse' else 'shoot'), 0.38)
-        base = 0.022 + 0.05 * (1 - p.fb.shooting) + (0.03 if header else 0.0)
+        base = (0.022 + 0.05 * (1 - p.fb.shooting) + (0.03 if header else 0.0)) * self.small_goal ** 0.5
         # Shooting across the body or on the run is harder
         want = math.atan2(ty - b.pos[1], gx - b.pos[0])
         turn = abs(ang_diff(want, p.facing))
@@ -1216,7 +1231,7 @@ class Match:
         # Missed: a moment to recover; sometimes he clips the man
         p.set_state('tackle', 0.55, 'miss')
         if behind and o.immune <= 0:
-            if self.settings['fouls'] and self.rng.random() < 0.35:
+            if self.settings['fouls'] and self.rng.random() < 0.25:
                 self._foul(p, o, severity=0.4)
         return False
 
@@ -1270,7 +1285,7 @@ class Match:
                     b.owner = None
                     b.kick(victim.vel[0] * 0.5, victim.vel[1] * 0.5, 0.0)
                 if self.settings['fouls']:
-                    self._foul(p, victim, severity=0.8 if behind else 0.5)
+                    self._foul(p, victim, severity=0.7 if behind else 0.45)
                 return
 
     def _foul(self, p, victim, severity=0.5):
@@ -1286,9 +1301,11 @@ class Match:
             a = team.attack
             last_man = all(o.pos[0] * a < x * a or o is p or o.keeper for o in p.team.active())
             r = self.rng.random()
-            if last_man and a * x > 0 and severity > 0.6:
+            # (only when the run was heading for goal from close enough to score)
+            near = abs(team.opp_goal_x(pt) - x) < pt.length * 0.3
+            if last_man and near and severity > 0.6 and r < 0.7:
                 card = 'red'
-            elif r < severity * 0.45:
+            elif r < severity * 0.32:
                 card = 'yellow'
         if card == 'yellow':
             p.yellow += 1
