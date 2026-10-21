@@ -86,8 +86,9 @@ def main(argv=None):
     print('  passes per team   %.0f   completed %.0f%%' % (sum(s['passes']) / 2, sum(s['pass_pct']) / 2 * 100))
     print('  tackles per team  %.1f' % (sum(s['tackles']) / 2))
     print('  per match: fouls %.1f, cards %.1f, corners %.1f, penalties %.2f, saves %.1f, woodwork %.1f, '
-          'offsides %.1f, off the walls %.1f' % (s['foul'], s['card'], s['restart_corner'], s['restart_penalty'],
-                                                 s['save'], s['woodwork'], s['offside'], s['wall']))
+          'offsides %.1f, off the walls %.1f, bank passes %.1f' % (
+              s['foul'], s['card'], s['restart_corner'], s['restart_penalty'], s['save'], s['woodwork'], s['offside'],
+              s['wall'], s['bank']))
     # How each team style actually plays
     rows = {}
     for r in results:

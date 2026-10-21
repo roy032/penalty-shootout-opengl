@@ -126,7 +126,7 @@ def summarise(results):
                problems=sum(len(r['problems']) for r in results))
     for key in ('shots', 'passes', 'pass_pct', 'tackles', 'possession', 'xg'):
         out[key] = [statistics.mean(r['teams'][i][key] for r in results) for i in (0, 1)]
-    for key in ('foul', 'card', 'restart_corner', 'restart_penalty', 'save', 'woodwork', 'offside', 'wall'):
+    for key in ('foul', 'card', 'restart_corner', 'restart_penalty', 'save', 'woodwork', 'offside', 'wall', 'bank'):
         out[key] = statistics.mean(r['events'].get(key, 0) for r in results)
     out['home_wins'] = sum(1 for r in results if r['winner'] == 0) / n
     return out

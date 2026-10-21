@@ -30,6 +30,8 @@ LINES = {
     'pen_scored': ["Scores!", "Cool as you like.", "No mistake."],
     'pen_missed': ["MISSED!", "Saved! Huge moment!", "It's been missed!"],
     'chip': ["The cheeky chip from {name}!"],
+    'bank': ["{name} plays it off the boards!", "Clever from {name}, using the wall!",
+             "One-two with the wall from {name}!"],
 }
 
 
@@ -102,6 +104,8 @@ class Commentary:
                 offer(self._pick('tackle', name=name(e['who'])), 0)
             elif t == 'skill' and self.cool <= 0 and self.rng.random() < 0.5:
                 offer(self._pick('skill', name=name(e['who'])), 0)
+            elif t == 'bank' and self.rng.random() < 0.7:
+                offer(self._pick('bank', name=name(e['who'])), 1)
             elif t == 'pass' and e.get('kind') == 'through' and self.cool <= 0 and self.rng.random() < 0.4:
                 offer(self._pick('through', name=name(e['who'])), 0)
             elif t in ('halftime', 'fulltime', 'kickoff', 'shootout'):

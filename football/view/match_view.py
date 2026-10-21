@@ -103,11 +103,25 @@ class MatchView:
                 pass_to=self._flat(1.2 * k, 1.2 * k, ring, col, 0.9, 18),
                 lane=self._flat(0.3 * k, 1.0, None, col, 0.35, 17),
                 lead=self._flat(1.0 * k, 1.0 * k, glow, col, 0.75, 17),
-                switch=self._flat(1.3 * k, 1.3 * k, ring, (1, 1, 1), 0.45, 18)))
+                switch=self._flat(1.3 * k, 1.3 * k, ring, (1, 1, 1), 0.45, 18),
+                bank1=self._flat(0.22 * k, 1.0, None, col, 0.5, 17),
+                bank2=self._flat(0.22 * k, 1.0, None, col, 0.5, 17),
+                bank_hit=self._flat(1.1 * k, 1.1 * k, glow, (1, 1, 1), 0.8, 18)))
         pt = self.match.pitch
         self.offside_line = self._flat(0.1, pt.width, None, (1.0, 0.95, 0.35), 0.55, 16)
         self.guide_cache = [None] * len(self.match.controllers)
         self.guide_t = 0.0
+
+    @staticmethod
+    def _segment(node, x0, y0, x1, y1, z=0.021):
+        d = math.hypot(x1 - x0, y1 - y0)
+        if d < 0.3:
+            node.hide()
+            return
+        node.show()
+        node.set_pos((x0 + x1) / 2.0, (y0 + y1) / 2.0, z)
+        node.set_h(math.degrees(math.atan2(y1 - y0, x1 - x0)) - 90.0)
+        node.set_sy(d)
 
     def _sync_guides(self, dt, live):
         m = self.match
@@ -146,6 +160,18 @@ class MatchView:
             else:
                 n['lead'].hide()
                 n['lane'].hide()
+            bk = g and g.get('bank')
+            if bk is not None:
+                (wx, wy), (lx, ly) = bk
+                bx, by = m.ball.pos[0], m.ball.pos[1]
+                self._segment(n['bank1'], bx, by, wx, wy)
+                self._segment(n['bank2'], wx, wy, lx, ly)
+                n['bank_hit'].show()
+                n['bank_hit'].set_pos(wx, wy, 0.03)
+            else:
+                n['bank1'].hide()
+                n['bank2'].hide()
+                n['bank_hit'].hide()
             sw = g and g['switch']
             if sw is not None and not sw.sent_off:
                 n['switch'].show()

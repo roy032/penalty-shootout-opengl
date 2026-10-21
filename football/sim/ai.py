@@ -272,25 +272,7 @@ class TeamAI:
 
     def _lane_safety(self, p, tx, ty, speed=14.0):
         """Seconds of margin before the nearest opponent could cut out a pass to (tx, ty)."""
-        sx, sy = p.pos
-        dx, dy = tx - sx, ty - sy
-        L = math.hypot(dx, dy)
-        if L < 0.5:
-            return 2.0
-        ux, uy = dx / L, dy / L
-        worst = 3.0
-        for o in self.team.opp.active():
-            ox, oy = o.pos[0] - sx, o.pos[1] - sy
-            along = ox * ux + oy * uy
-            if along < -1.0:
-                continue
-            along = min(along, L)
-            perp = abs(ox * -uy + oy * ux) if along < L else math.hypot(o.pos[0] - tx, o.pos[1] - ty)
-            t_ball = along / speed + 0.1
-            reach = 0.9 if not o.keeper else 1.6
-            t_opp = max(0.0, perp - reach) / max(4.0, o.top_speed() * 0.8) + 0.18
-            worst = min(worst, t_opp - t_ball)
-        return worst
+        return self.match.lane_safety(self.team, p.pos[0], p.pos[1], tx, ty, speed)
 
     def _pressure(self, p, r=3.0):
         return min((o.dist_to(*p.pos) for o in self.team.opp.active()), default=10.0)
@@ -342,7 +324,11 @@ class TeamAI:
                     continue
                 if kind == 'lob' and d < 14.0:
                     continue
-                safe = self._lane_safety(p, tx, ty)
+                if kind == 'ground':
+                    # In the cage, a blocked lane might still be on off the boards
+                    safe = m.pass_lane(p, tx, ty)[0]
+                else:
+                    safe = self._lane_safety(p, tx, ty)
                 space = min((o.dist_to(tx, ty) for o in self.team.opp.active()), default=8.0)
                 if kind == 'lob':
                     # Over the top: the lane doesn't matter, the landing spot does

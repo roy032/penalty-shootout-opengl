@@ -914,6 +914,85 @@ class Match:
                             and m.pos[0] * a > second_last + 0.2}
         self.offside_team = p.team
 
+    # ---------------------------------------------------------- cage wall passes
+    def bank_shot(self, sx, sy, tx, ty, arrive=8.0):
+        """A ground pass from (sx, sy) off a side board of the cage to (tx, ty).
+        Returns dict(wall=(x, y), speed, angle, t1, t2) for the board that suits it
+        best, or None if neither works (or the pitch has no walls)."""
+        pt = self.pitch
+        if not pt.walls:
+            return None
+        W = pt.half_width - B.RADIUS
+        r = B.WALL_BOUNCE / 0.9         # the board keeps 62% of the speed across it, 90% along it
+        D = tx - sx
+        best = None
+        for side in (-1, 1):
+            wy = side * W
+            a, bb = abs(wy - sy), abs(wy - ty)
+            if a < 1.5 or bb < 1.0:
+                continue
+            # Angle in and out differ because the board deadens the ball more across it
+            dx1 = D / (1.0 + bb / (r * a))
+            wx = sx + dx1
+            if abs(wx) > pt.half_length - 1.0:
+                continue
+            l1 = math.hypot(dx1, a)
+            l2 = math.hypot(D - dx1, bb)
+            if l1 < 2.0 or l2 < 2.0:
+                continue
+            cosi, sini = abs(dx1) / l1, a / l1
+            keep = math.hypot(0.9 * cosi, B.WALL_BOUNCE * sini)
+            v_out = B.roll_speed_for(l2, arrive)
+            v0 = B.roll_speed_for(l1, v_out / keep)
+            if v0 > 30.0:
+                continue
+            t1 = B.roll_time(v0, l1) or 9.0
+            t2 = B.roll_time(v_out, l2) or 9.0
+            cand = dict(wall=(wx, wy), speed=v0, angle=math.atan2(wy - sy, dx1), t1=t1, t2=t2, length=l1 + l2)
+            if best is None or cand['length'] < best['length']:
+                best = cand
+        return best
+
+    def lane_safety(self, team, sx, sy, tx, ty, speed=14.0, t0=0.0):
+        """Seconds of margin before the nearest opponent of team could cut out a ball
+        rolling from (sx, sy) to (tx, ty), starting t0 seconds from now."""
+        dx, dy = tx - sx, ty - sy
+        L = math.hypot(dx, dy)
+        if L < 0.5:
+            return 2.0
+        ux, uy = dx / L, dy / L
+        worst = 3.0
+        for o in team.opp.active():
+            ox, oy = o.pos[0] - sx, o.pos[1] - sy
+            along = ox * ux + oy * uy
+            if along < -1.0:
+                continue
+            along = min(along, L)
+            perp = abs(ox * -uy + oy * ux) if along < L else math.hypot(o.pos[0] - tx, o.pos[1] - ty)
+            t_ball = t0 + along / speed + 0.1
+            reach = 0.9 if not o.keeper else 1.6
+            t_opp = max(0.0, perp - reach) / max(4.0, o.top_speed() * 0.8) + 0.18
+            worst = min(worst, t_opp - t_ball)
+        return worst
+
+    def pass_lane(self, p, tx, ty):
+        """(safety, bank) for a ground pass from p to (tx, ty): bank is a bank_shot()
+        dict when playing it off the boards is clearly safer than straight, else None."""
+        sx, sy = self.ball.pos[0], self.ball.pos[1]
+        direct = self.lane_safety(p.team, sx, sy, tx, ty)
+        if direct > 0.15 or not self.pitch.walls:
+            return direct, None
+        bk = self.bank_shot(sx, sy, tx, ty)
+        if bk is None:
+            return direct, None
+        wx, wy = bk['wall']
+        l1 = math.hypot(wx - sx, wy - sy)
+        safe = min(self.lane_safety(p.team, sx, sy, wx, wy, speed=l1 / max(0.2, bk['t1'])),
+                   self.lane_safety(p.team, wx, wy, tx, ty, t0=bk['t1']))
+        if safe > direct + 0.1 and safe > -0.25:
+            return safe, bk
+        return direct, None
+
     def do_pass(self, p, direction, kind='ground', receiver=None):
         b = self.ball
         if receiver is None:
@@ -932,10 +1011,18 @@ class Match:
         if kind == 'lob':
             self._lofted(p, tx, ty)
         else:
-            d = math.hypot(tx - b.pos[0], ty - b.pos[1])
-            arrive = 4.0 if kind == 'ground' else 5.0
-            v = min(30.0, B.roll_speed_for(d, arrive) + (1.2 if d > 10 else 0.4))
-            ang = math.atan2(ty - b.pos[1], tx - b.pos[0]) + self._error(p, 0.035 + 0.06 * (1 - p.fb.passing))
+            bank = self.pass_lane(p, tx, ty)[1] if kind == 'ground' and receiver is not None else None
+            if bank is not None:
+                # Off the boards: aim at the wall, and the bounce takes it on to him
+                v = bank['speed']
+                ang = bank['angle'] + self._error(p, 0.03 + 0.05 * (1 - p.fb.passing))
+                tx, ty = bank['wall']
+                self.emit('bank', who=self._idx(p), wall=bank['wall'])
+            else:
+                d = math.hypot(tx - b.pos[0], ty - b.pos[1])
+                arrive = 4.0 if kind == 'ground' else 5.0
+                v = min(30.0, B.roll_speed_for(d, arrive) + (1.2 if d > 10 else 0.4))
+                ang = math.atan2(ty - b.pos[1], tx - b.pos[0]) + self._error(p, 0.035 + 0.06 * (1 - p.fb.passing))
             b.kick(math.cos(ang) * v, math.sin(ang) * v, 0.0)
         p.face_towards(tx, ty)
         if receiver is not None:
@@ -1659,7 +1746,7 @@ class Match:
         """What the on-pitch guides show for controller c: who an assisted pass would go to,
         where a through ball would be played, who a switch would hand you, and the offside
         line. Any of them can be None."""
-        g = dict(pass_to=None, through=None, switch=None, offside=None)
+        g = dict(pass_to=None, through=None, switch=None, offside=None, bank=None)
         p = c.player
         if p is None or p.sent_off or self.state not in ('play', 'kickoff', 'restart'):
             return g
@@ -1667,6 +1754,11 @@ class Match:
         stick = norm(*c.move) if math.hypot(*c.move) > 0.2 else None
         if b.owner is p or (self.restart and self.restart['taker'] is p and not self.restart.get('taken')):
             g['pass_to'] = self.pick_receiver(p, stick, 'ground')
+            if g['pass_to'] is not None and self.pitch.walls:
+                lx, ly = self.lead_point(p, g['pass_to'], 'ground')
+                bk = self.pass_lane(p, lx, ly)[1]
+                if bk is not None:
+                    g['bank'] = (bk['wall'], (lx, ly))
             m = self.pick_receiver(p, stick, 'through')
             if m is not None and not m.keeper and (m.pos[0] - p.pos[0]) * p.team.attack > 2.0:
                 g['through'] = (m, self.lead_point(p, m, 'through'))
