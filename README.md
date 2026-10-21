@@ -17,12 +17,15 @@ What is in this first version:
 
 - **Formats**: cage 5-a-side with rebound walls (the default), 5-a-side, 7-a-side and 11-a-side.
 - **Teams**: Legends, All Stars, Queens, Pioneers, Myths and Cult Heroes, built from the characters, plus five club sides.
-- **Modes**: 1 player against the computer, 2 players head to head, 2 players on the same team, a penalty shootout, or watching CPU against CPU. Draws go to penalties.
+- **Modes**: 1 player against the computer, 2 players head to head, 2 players on the same team, a penalty shootout, Cup Run, or watching CPU against CPU. Draws go to penalties.
+- **Cup Run**: four knockout ties (Round of 16 to the Final), each harder than the last. After every win you pick one of three perks for the rest of the run: faster shots, a bigger engine, sharper passing, quicker feet or a keeper with longer reach.
 - **Difficulty**: Beginner, Amateur, Pro, World Class and Legendary. **Style**: Arcade, or Authentic (slower, less accurate, with offside on full pitches).
 - **Football**: assisted passes, through balls, lobs and crosses; shots with power and placement, finesse curlers and chips; headers and first-time volleys; skill moves; sprinting knocks the ball ahead. Defending uses press and tackle, slide tackles, and calling a second man. There are fouls, cards, free kicks, penalties, corners, throw-ins and goal kicks.
 - **Team AI**: the team keeps its shape and presses, marks, makes support runs, plays passes based on the passing lanes, and has keepers who position themselves, dive, catch, parry, rush out and distribute.
 - **Team styles**: every side plays its own way. Legends keep the ball, All Stars break on the counter, Queens press high, Pioneers go direct, Myths are chaos and Cult Heroes sit in a low block. The team-select screen tells you who plays how.
 - **Forgiving controls**: a pass or shot pressed a split second after the ball runs off your foot still counts, an early tackle still goes in, and the stick steers your first touch (leave it alone to kill the ball dead, push it across your body to turn, sprint to knock it into space).
+- **Wall passes**: in the cage, passes go off the boards when a defender is in the way, for you (the guide bends off the wall to show it) and for the computer.
+- **Penalties**: one system for penalties in a match and the shootout. Aim a ring with the stick, hold shoot and release in the sweet zone of the power bar (too hard and it flies over), E to curl it, lob for a Panenka. In goal, pick a dive with the stick and a button before the kick. Takers use the composure, power and placement ratings from the classic game, and the shootout shows each side's chances of winning.
 - **Pitch guides** (Settings or Pause, on by default): a ring under the team-mate your pass will find, the through-ball lane, a white ring under the player a switch would give you, and the offside line on Authentic full pitches.
 - **Presentation**: a floodlit stadium with crowds that react, a broadcast camera (plus tactical, end-to-end and third-person cameras), goal replays, captions from the commentary, a radar, and a scoreboard and HUD that scale with the window.
 

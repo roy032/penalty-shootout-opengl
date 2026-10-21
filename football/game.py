@@ -13,6 +13,7 @@ from panda3d.core import TextNode, WindowProperties
 
 from . import app as A
 from .sim import roster
+from .sim.cuprun import PERKS, CupRun
 from .sim.styles import style_for
 from .sim.match import FIXED_DT, DIFFICULTY, Match
 from .view.camera import LABELS as CAM_LABELS, MODES as CAM_MODES
@@ -27,13 +28,16 @@ HALVES = [(60.0, '1 min halves'), (90.0, '1.5 min halves'), (150.0, '2.5 min hal
 
 
 class MatchSession:
-    def __init__(self, app, home, away, humans, attract=False, shootout_only=False):
+    def __init__(self, app, home, away, humans, attract=False, shootout_only=False, cup=False):
         s = app.settings
         size, pitch = A.FORMATS[s['format']]
         cfg = dict(size=size, pitch=pitch, half_seconds=s['half'] if not attract else 120.0,
                    difficulty=s['difficulty'], preset=s['preset'], auto_switch=s['auto_switch'])
+        if cup:
+            cfg = app.cup.tie_settings(cfg)
         self.app = app
         self.attract = attract
+        self.cup = cup
         self.match = Match(home, away, settings=cfg, humans=humans, seed=random.randrange(1 << 30))
         if shootout_only:
             self.match.start_shootout()
@@ -196,6 +200,7 @@ class FootballApp(ShowBase):
         self.set_background_color(0.02, 0.03, 0.06, 1)
         self.menus = []
         self.session = None
+        self.cup = None
         self.inputs = Inputs(self, os.path.join(A.HOME, 'controls.json'))
         self.audio = None
         try:
@@ -318,6 +323,9 @@ class FootballApp(ShowBase):
         if session.attract:
             self.attract()
             return
+        if session.cup:
+            self.cup_result(session.match)
+            return
         self.results_menu(session.match)
 
     # ------------------------------------------------------------ menus
@@ -326,6 +334,7 @@ class FootballApp(ShowBase):
         Menu(self, 'ULTIMATE FOOTBALL', [
             Row('Kick off', self.setup_menu, help='Pick the teams, the format and go'),
             Row('Quick match', lambda: self.start_match(), help='Straight into a match with your last settings'),
+            Row('Cup Run', self.cup_menu, help='Four knockout ties, harder each round. Pick a perk after every win'),
             Row('Penalty shootout', lambda: self.start_match(shootout_only=True),
                 help='Best of five from the spot, then sudden death'),
             Row('Classic penalty game', self.launch_classic, help='The original Penalty Shootout game'),
@@ -527,6 +536,75 @@ class FootballApp(ShowBase):
             text += '\n\n' + '\n'.join(lines[:8])
         OnscreenText(text=text, parent=menu.root, pos=(0, 0.47), scale=0.042, fg=(0.92, 0.94, 1, 1),
                      align=TextNode.A_center)
+
+    # ------------------------------------------------------------ cup run
+    def cup_menu(self):
+        if self.cup is None or self.cup.over:
+            self.cup = CupRun(self.settings['home'], seed=random.randrange(1 << 30))
+        cup = self.cup
+        self.clear_menus()
+        rows = []
+        t = cup.tie()
+        opp = roster.team_info(t['opp'])['name']
+        rows.append(Row('Play the %s v %s' % (t['name'].lower(), opp), self._play_cup_tie,
+                        help='%s difficulty. Draws go to penalties.' % DIFFICULTY[t['difficulty']]['label']))
+        if cup.round == 0:
+            teams, _, _ = self._team_rows()
+
+            def pick(v):
+                self.settings['home'] = v
+                self.cup = None
+                self.cup_menu()
+            rows.append(Row('Your team', options=teams, get=lambda: cup.team, set=pick,
+                            help=self._team_help('home')))
+        rows.append(Row('Abandon the run', self._abandon_cup))
+        menu = Menu(self, 'CUP RUN', rows, back=self.main_menu, y0=-0.3, width=1.3,
+                    subtitle='%s   |   Perks: %s' % (roster.team_info(cup.team)['name'], cup.perk_text()))
+        OnscreenText(text='\n'.join(cup.bracket_lines()), parent=menu.root, pos=(0, 0.42), scale=0.05,
+                     fg=(0.92, 0.94, 1, 1), align=TextNode.A_center)
+
+    def _play_cup_tie(self):
+        cup = self.cup
+        self.clear_menus()
+        self.end_session()
+        self.session = MatchSession(self, cup.team, cup.tie()['opp'], ((0, 0),), cup=True)
+        self.settings['matches'] += 1
+        A.save_settings(self.settings)
+
+    def _abandon_cup(self):
+        self.cup = None
+        self.main_menu()
+
+    def cup_result(self, m):
+        cup = self.cup
+        a, b = m.teams
+        tie = cup.tie()
+        won = cup.record((a.score, b.score), (sum(a.pens), sum(b.pens)) if m.shootout else None)
+        score = '%s  %d - %d  %s' % (a.name, a.score, b.score, b.name)
+        if m.shootout:
+            score += '   (%d-%d pens)' % (sum(a.pens), sum(b.pens))
+        if cup.champion:
+            title, rows = 'CHAMPIONS', [Row('New Cup Run', self.cup_menu), Row('Main menu', self._quit_to_menu)]
+        elif not won:
+            title = 'KNOCKED OUT'
+            rows = [Row('Try again', self.cup_menu), Row('Main menu', self._quit_to_menu)]
+        else:
+            title = '%s WON' % tie['name'].upper()
+            rows = [Row(PERKS[k]['label'], (lambda k=k: self._take_perk(k)), help=PERKS[k]['blurb'])
+                    for k in cup.offer]
+        self.end_session()
+        self.attract()
+        menu = Menu(self, title, rows, back=None if won and not cup.champion else self._quit_to_menu,
+                    subtitle=score, y0=-0.12, width=1.3)
+        text = '\n'.join(cup.bracket_lines())
+        if won and not cup.champion:
+            text += '\n\nPick a perk for the rest of the run'
+        OnscreenText(text=text, parent=menu.root, pos=(0, 0.42), scale=0.048, fg=(0.92, 0.94, 1, 1),
+                     align=TextNode.A_center)
+
+    def _take_perk(self, key):
+        self.cup.take(key)
+        self.cup_menu()
 
     def _swap_and_play(self):
         s = self.settings

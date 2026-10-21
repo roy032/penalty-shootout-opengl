@@ -38,7 +38,7 @@ DIFFICULTY = {
 
 DEFAULTS = dict(size=5, pitch='cage', half_seconds=150.0, difficulty='pro', preset='arcade', fouls=True,
                 cards=True, offside=None, decider='penalties', assist=True, auto_switch=True, weather='clear',
-                stamina=True, extra_time=False, styles=None)
+                stamina=True, extra_time=False, styles=None, perks=())
 
 
 class Team:
@@ -52,6 +52,10 @@ class Team:
         self.score = 0
         self.speed_scale = 1.0
         self.error_scale = 1.0
+        self.shot_power = 1.0       # perks (Cup Run): harder shots, ...
+        self.stamina_drain = 1.0    # ... a bigger engine, ...
+        self.reach = 1.0            # ... and a keeper who gets further
+        self.perks = ()
         self.ai_react = 0.2
         self.ai_noise = 0.1
         self.press = 1.0
@@ -165,6 +169,10 @@ class Match:
             if s['preset'] == 'authentic':
                 t.error_scale *= 1.35
                 t.speed_scale *= 0.94
+        if s['perks']:
+            # Cup Run perks belong to the home side (the player's team)
+            from .cuprun import apply_perks
+            apply_perks(a, s['perks'])
         self.time = 0.0             # seconds played in this half
         self.half = 1
         self.state = 'kickoff'
@@ -757,11 +765,11 @@ class Match:
             ax, ay, az = k.pos[0], k.pos[1], 0.55 + k.z * 0.5
             hx, hy = ax + dx * span, ay + dy * span
             hz = hz + k.z * 0.5
-            reach = 0.3 + 0.14 * k.fb.keeping
+            reach = (0.3 + 0.14 * k.fb.keeping) * k.team.reach
         else:
             ax, ay, az = k.pos[0], k.pos[1], 0.15
             hx, hy, hz = k.pos[0], k.pos[1], 2.25 + k.z
-            reach = 0.5 + 0.15 * k.fb.keeping
+            reach = (0.5 + 0.15 * k.fb.keeping) * k.team.reach
         abx, aby, abz = hx - ax, hy - ay, hz - az
         L = abx * abx + aby * aby + abz * abz
         t = max(0.0, min(1.0, ((bx - ax) * abx + (by - ay) * aby + (bz - az) * abz) / L)) if L > 0 else 0.0
@@ -1103,7 +1111,7 @@ class Match:
             return
         # Height rises with power; a blasted shot can fly over
         tz = 0.35 + power * 1.25 + max(0.0, power - 0.82) * 4.5 * (1.1 - p.fb.shooting)
-        speed = (13.0 + 17.0 * power) * (0.8 + 0.3 * p.fb.shooting)
+        speed = (13.0 + 17.0 * power) * (0.8 + 0.3 * p.fb.shooting) * p.team.shot_power
         if style == 'finesse':
             speed *= 0.82
             tz = min(tz, 1.8)

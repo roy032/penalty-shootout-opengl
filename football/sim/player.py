@@ -167,7 +167,7 @@ class Player:
         self.run_phase = (self.run_phase + dt * (1.6 + sp * 0.62)) % 1.0
         # Stamina: sprinting drains it, jogging and walking win it back
         if self.sprint and sp > 3.0:
-            self.stamina = max(0.0, self.stamina - dt * (0.05 - 0.02 * self.fb.physical))
+            self.stamina = max(0.0, self.stamina - dt * (0.05 - 0.02 * self.fb.physical) * self.team.stamina_drain)
         else:
             self.stamina = min(1.0, self.stamina + dt * (0.012 if sp > 3.0 else 0.03))
 
