@@ -80,6 +80,20 @@ class Camera:
         c.look_at(self.look[0], self.look[1], self.look[2])
         self.base.camLens.set_fov(self.fov / zoom)
 
+    def penalty(self, dt, spot, attack, ball=None):
+        """Low behind the taker, the whole goal in view (the penalty game's camera)."""
+        pt = self.pitch
+        sx, sy = spot
+        gx = attack * pt.half_length
+        big = pt.length > 80
+        tp = (sx - attack * (7.5 if big else 6.0), sy * 0.5, 2.5 if big else 2.2)
+        tl = (gx, 0.0, pt.goal_height * 0.45)
+        k = min(1.0, dt * 4.0)
+        for i in range(3):
+            self.pos[i] += (tp[i] - self.pos[i]) * k
+            self.look[i] += (tl[i] - self.look[i]) * k
+        self._apply(1.25 if big else 1.0)
+
     def replay(self, dt, ball, angle, t):
         """Replay cameras: low behind the goal, side-on tracking, or circling the ball."""
         pt = self.pitch

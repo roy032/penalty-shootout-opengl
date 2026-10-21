@@ -8,6 +8,7 @@ from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import TextNode, TransparencyAttrib
 
 from .inputs import key_label
+from ..sim.match import PEN_SWEET
 
 PANEL = (0.03, 0.04, 0.07, 0.78)
 GOLD = (1.0, 0.82, 0.3, 1)
@@ -57,7 +58,14 @@ class Hud:
         self.pfill = DirectFrame(parent=self.pbar, frameColor=(0.3, 0.9, 0.4, 1), frameSize=(0, 0.6, -0.022, 0.022),
                                  pos=(-0.3, 0, 0))
         self.ptxt = _txt(self.pbar, 'POWER', (0, 0.045), 0.04, align=TextNode.A_center, font=font)
+        # The sweet spot for a spot kick: hit it there and it stays down
+        lo, hi = PEN_SWEET
+        self.psweet = DirectFrame(parent=self.pbar, frameColor=(1, 1, 1, 0.22),
+                                  frameSize=(0, 0.6 * (hi - lo), -0.03, 0.03), pos=(-0.3 + 0.6 * lo, 0, 0))
+        self.psweet.hide()
         self.pbar.hide()
+        # Shootout win chances
+        self.odds = _txt(self.board, '', (0.335, -0.25), 0.034, (0.85, 0.9, 1.0, 1), TextNode.A_center, font=font)
         # Stamina of the player you control
         self.stam = DirectFrame(parent=base.a2dBottomCenter, frameColor=(0, 0, 0, 0.5), frameSize=(-0.2, 0.2, -0.008, 0.008),
                                 pos=(0, 0, 0.1))
@@ -126,8 +134,11 @@ class Hud:
             def dots(t):
                 return ' '.join('O' if x else 'X' for x in t.pens) or '-'
             self.pens.setText('%s  |  %s' % (dots(a), dots(b)))
+            odds = m.penalty_odds()
+            self.odds.setText('WIN %d%%  |  %d%%' % (round(odds * 100), round((1 - odds) * 100)))
         else:
             self.pens.setText('')
+            self.odds.setText('')
         # Banner fade
         if self.banner_t > 0:
             self.banner_t -= dt
@@ -150,7 +161,9 @@ class Hud:
             self.pbar.show()
             f = max(0.0, min(1.0, c.charge))
             self.pfill['frameSize'] = (0, 0.6 * f, -0.022, 0.022)
-            hot = f > 0.85
+            pen = m.restart is not None and m.restart['kind'] == 'penalty' and not m.restart.get('taken')
+            self.psweet.show() if pen else self.psweet.hide()
+            hot = f > (PEN_SWEET[1] if pen else 0.85)
             self.pfill['frameColor'] = (0.95, 0.3, 0.2, 1) if hot else ((0.95, 0.8, 0.2, 1) if f > 0.6 else (0.3, 0.9, 0.4, 1))
         else:
             self.pbar.hide()
@@ -187,10 +200,20 @@ class Hud:
         L = (lambda a, p: p) if pad else (lambda a, p: key_label(k[a]))
         b = m.ball
         r = m.restart
+        if m.state in ('kickoff', 'restart') and r and r['kind'] == 'penalty' and r['team'] is not c.team \
+                and not r.get('taken'):
+            gk = c.team.keeper()
+            pick = getattr(gk, 'pen_commit', None) if gk else None
+            if pick is not None:
+                where = 'centre' if abs(pick[0]) < 0.1 else ('to your left' if pick[0] * c.team.attack > 0
+                                                             else 'to your right')
+                return 'Diving %s%s | change it any time before the kick' % (where, ', high' if pick[1] > 1 else '')
+            return 'Pick a dive: stick to a side + %s (hold %s for high) | or leave it and he guesses' % (
+                L('pass', 'A'), L('lob', 'X'))
         if m.state in ('kickoff', 'restart') and r and r['team'] is c.team and not r.get('taken'):
             if r['kind'] == 'penalty':
-                return '%s hold and release to shoot | aim with the stick | %s for finesse' % (
-                    L('shoot', 'B'), L('finesse', 'RB'))
+                return 'Aim with the stick | %s hold for power, release in the white zone | %s curl | %s Panenka' % (
+                    L('shoot', 'B'), L('finesse', 'RB'), L('lob', 'X'))
             return '%s pass | %s through | %s lob' % (L('pass', 'A'), L('through', 'Y'), L('lob', 'X'))
         if b.owner is c.player:
             return '%s pass | %s shoot (hold) | %s through | %s lob | %s sprint | %s skill' % (

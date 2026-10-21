@@ -13,6 +13,7 @@ from .pitch import PITCHES
 from .player import Player, CONTROL, REACH_HEAD, norm, ang_diff
 
 FIXED_DT = 1.0 / 60.0
+PEN_SWEET = (0.55, 0.82)    # spot-kick power that is struck cleanly: above it the ball climbs
 LATE_GRACE = 0.13           # a press this soon after the ball slips off your foot still plays it
 EARLY_TACKLE = 0.25         # a tackle pressed this early still goes in when the man takes his touch
 
@@ -98,6 +99,7 @@ class Controller:
         self.held = frozenset()
         self.owned_tick = -10 ** 6  # last tick the controlled player had the ball at his feet
         self.tackle_t = 0.0         # tackle pressed a moment before the opponent got the ball
+        self.pen_aim = None         # [y, z] on the goal mouth while lining up a penalty
 
 
 class Input:
@@ -454,6 +456,14 @@ class Match:
         need = 9.15 if self.pitch.length > 80 else 4.0
         if r['kind'] == 'kickoff':
             need = self.pitch.circle
+        if r['kind'] == 'penalty':
+            # Everyone but the taker and the keeper stays outside the box until it's struck
+            a = r['team'].attack
+            line = a * (self.pitch.half_length - self.pitch.box_depth - 1.0)
+            gk = r['team'].opp.keeper()
+            for p in self.all_players():
+                if p is not taker and p is not gk and not p.keeper and p.pos[0] * a > line * a:
+                    p.pos[0] = line
         for p in r['team'].opp.active():
             if r['kind'] == 'penalty':
                 continue
@@ -480,6 +490,7 @@ class Match:
         r = self.restart
         if r and not r.get('taken') and self.state in ('kickoff', 'restart'):
             r['taken'] = True
+            r['taken_tick'] = self.ticks
             r['by'] = by
             self.emit('restart_taken', kind=r['kind'])
 
@@ -1622,6 +1633,14 @@ class Match:
         finesse = 'finesse' in inp.held
 
         # Penalties, free kicks and the rest: stand over the ball and pick the option
+        facing_pen = self.state in ('kickoff', 'restart') and r and r['kind'] == 'penalty' and \
+            r['team'] is not c.team and not r.get('taken')
+        if facing_pen:
+            self._penalty_keeper(c, inp)
+            return
+        if taking and r['kind'] == 'penalty':
+            self._penalty_taker(c, p, inp, dt, finesse)
+            return
         if taking:
             if stick:
                 p.facing = math.atan2(stick[1], stick[0]) if r['kind'] != 'penalty' else p.facing
@@ -1741,6 +1760,141 @@ class Match:
             c.tackle_t = EARLY_TACKLE
         if 'shoot' in inp.pressed:
             c.charge = 0.0
+
+    # ---------------------------------------------------------- penalties
+    def penalty_limits(self):
+        """How far the aim can go: a little outside the posts and over the bar."""
+        pt = self.pitch
+        return pt.goal_width / 2.0 + 0.7, pt.goal_height + 0.6
+
+    def penalty_pressure(self, team):
+        """0..1: how much rides on this kick for team (sudden death is the worst)."""
+        if self.shootout:
+            mine, theirs = len(team.pens), len(team.opp.pens)
+            if mine >= 5:
+                return 1.0
+            # Must score to stay alive: a miss now and they can't be caught
+            if theirs > mine and sum(team.pens) + (4 - mine) < sum(team.opp.pens):
+                return 0.85
+            return 0.3 + 0.1 * mine
+        return 0.35 + (0.35 if self.clock() > 80 else 0.0)
+
+    def _penalty_taker(self, c, p, inp, dt, finesse):
+        """The classic spot kick: aim anywhere on the goal mouth, then strike with timed power."""
+        if c.pen_aim is None:
+            c.pen_aim = [0.0, 0.9]
+        ly, lz = self.penalty_limits()
+        mx, my = inp.move
+        a = p.team.attack
+        # Across the goal moves the aim sideways; pushing towards the goal lifts it
+        c.pen_aim[0] = max(-ly, min(ly, c.pen_aim[0] + my * 2.6 * dt))
+        c.pen_aim[1] = max(0.15, min(lz, c.pen_aim[1] + mx * a * 2.0 * dt))
+        if 'lob' in inp.pressed and c.charge is None:
+            # The Panenka: a soft chip where you're aiming (down the middle, if you dare)
+            self.take_penalty(p, c.pen_aim[0], max(0.9, c.pen_aim[1]), 0.35, 'panenka')
+            c.pen_aim = None
+            return
+        if 'shoot' in inp.pressed:
+            c.charge = 0.0
+        if c.charge is not None and 'shoot' in inp.held:
+            c.charge = min(1.0, c.charge + dt * 0.85)
+        if c.charge is not None and 'shoot' in inp.released:
+            self.take_penalty(p, c.pen_aim[0], c.pen_aim[1], c.charge, 'finesse' if finesse else 'normal')
+            c.charge = None
+            c.pen_aim = None
+
+    def _penalty_keeper(self, c, inp):
+        """Facing a penalty: pick a dive before the kick (stick to a side, I for high), or
+        leave it and let the keeper guess."""
+        k = c.team.keeper()
+        if k is None:
+            return
+        c.player = k
+        if inp.pressed & {'pass', 'shoot', 'through', 'lob'}:
+            mx, my = inp.move
+            hw = self.pitch.goal_width / 2.0
+            side = 0.0 if abs(my) < 0.3 else math.copysign(1.0, my)
+            high = 'lob' in inp.pressed or 'lob' in inp.held
+            k.pen_commit = (side * hw * 0.75, 1.55 if high else 0.45)
+            self.emit('keeper_pick', who=self._idx(k), side=side, high=high)
+
+    def take_penalty(self, p, ty, tz, power, style='normal'):
+        """Strike a spot kick at (ty, tz) on the goal mouth. Spread comes from the taker's
+        penalty ratings and the pressure; over-hitting it lifts it, a Panenka floats."""
+        b = self.ball
+        pt = self.pitch
+        gx = p.team.opp_goal_x(pt)
+        comp, pw, plc = p.fb.pen
+        power = max(0.0, min(1.0, power))
+        pressure = self.penalty_pressure(p.team)
+        sigma = (0.08 + 0.26 * (1.0 - plc)) * (1.0 + pressure * (1.0 - comp)) * math.sqrt(p.team.error_scale)
+        lo, hi = PEN_SWEET
+        if style == 'panenka':
+            speed = 8.0 + 2.0 * power
+            sigma *= 0.6
+        else:
+            speed = (14.0 + 16.0 * power) * (0.85 + 0.25 * pw)
+            if power > hi:
+                sigma *= 1.0 + (power - hi) * 3.0
+                tz += (power - hi) * (7.0 - 4.0 * pw)
+            elif power < lo:
+                speed *= 0.8 + 0.2 * power / lo
+            if style == 'finesse':
+                speed *= 0.85
+                sigma *= 0.85
+        ty += self.rng.gauss(0.0, sigma)
+        tz = max(0.12, tz + self.rng.gauss(0.0, sigma * 0.7))
+        self._start_kick(p, 'chip' if style == 'panenka' else ('finesse' if style == 'finesse' else 'shoot'), 0.38)
+        dist = math.hypot(gx - b.pos[0], ty - b.pos[1])
+        t = dist / speed
+        vh = speed * (1.0 + B.DRAG * dist * 0.5)
+        vz = (tz - b.pos[2]) / t + 0.5 * B.GRAVITY * t
+        ang = math.atan2(ty - b.pos[1], gx - b.pos[0])
+        spin = (0.0, 0.0, -math.copysign(12.0, ty - b.pos[1]) * p.team.attack) if style == 'finesse' else (0, 0, 0)
+        b.kick(math.cos(ang) * vh, math.sin(ang) * vh, vz, spin=spin)
+        p.face_towards(gx, ty)
+        self._shot_bookkeeping(p, power, 'chip' if style == 'panenka' else style)
+        # A keeper who picked his side goes as the ball is struck
+        k = p.team.opp.keeper()
+        commit = getattr(k, 'pen_commit', None) if k else None
+        if commit is not None:
+            k.pen_commit = None
+            self.keeper_dive(k, k.pos[0], commit[0], commit[1], max(0.15, t * 0.9))
+        return (ty, tz)
+
+    def penalty_odds(self, conv=0.75):
+        """Chance the home side wins the shootout from here (each kick scores with conv)."""
+        if not self.shootout:
+            return None
+        from functools import lru_cache
+
+        @lru_cache(maxsize=None)
+        def win(na, sa, nb, sb):
+            if na <= 5 and nb <= 5:
+                if sa > sb + (5 - nb):
+                    return 1.0
+                if sb > sa + (5 - na):
+                    return 0.0
+                if na == 5 and nb == 5 and sa == sb:
+                    return 0.5      # sudden death between equal takers
+            elif na == nb:
+                if sa != sb:
+                    return 1.0 if sa > sb else 0.0
+                return 0.5
+            if na == nb:
+                return conv * win(na + 1, sa + 1, nb, sb) + (1 - conv) * win(na + 1, sa, nb, sb)
+            return conv * win(na, sa, nb + 1, sb + 1) + (1 - conv) * win(na, sa, nb + 1, sb)
+        a, b = self.teams[0].pens, self.teams[1].pens
+        return win(len(a), sum(a), len(b), sum(b))
+
+    def penalty_cam(self):
+        """True while a penalty is being lined up, struck or settled: the view goes behind the taker."""
+        r = self.restart
+        if not r or r['kind'] != 'penalty' or self.state in ('goal', 'fulltime', 'halftime'):
+            return False
+        if not r.get('taken'):
+            return True
+        return self.ticks - r.get('taken_tick', 0) < 140 or (self.shootout is not None and self.state == 'pen_wait')
 
     def guide(self, c):
         """What the on-pitch guides show for controller c: who an assisted pass would go to,

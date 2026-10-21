@@ -34,7 +34,13 @@ class TeamAI:
             self._team_plan()
         k = self.team.keeper()
         for p in self.team.active():
-            if m._controller_of(p) is not None:
+            if m._controller_of(p) is not None and not (p is k and m.penalty_cam()):
+                # (a human facing a penalty only picks the dive: the keeper still moves himself)
+                continue
+            if m.shootout and m.restart and p is not m.restart['taker'] \
+                    and not (p is k and m.restart['team'] is not self.team):
+                # Everyone waiting their turn stays put in the centre circle
+                p.target = None
                 continue
             if p is k:
                 self._keeper(p, dt)
@@ -418,10 +424,12 @@ class TeamAI:
             m.do_pass(p, None, 'ground', receiver=mate)
         elif kind == 'penalty':
             rng = m.rng
-            if rng.random() < 0.05 + 0.05 * p.fb.aura:
-                m.do_shoot(p, (0.0, 0.0), 0.5, 'chip')
+            hw = pt.goal_width / 2.0
+            if rng.random() < 0.04 + 0.05 * p.fb.aura:
+                m.take_penalty(p, 0.0, 1.1, 0.35, 'panenka')
             else:
-                m.do_shoot(p, (0.0, rng.choice((-1, 1)) * rng.uniform(0.65, 1.0)), rng.uniform(0.5, 0.82))
+                m.take_penalty(p, rng.choice((-1, 1)) * rng.uniform(0.5, 0.85) * hw, rng.uniform(0.3, 1.7),
+                               rng.uniform(0.5, 0.8), 'finesse' if rng.random() < 0.25 else 'normal')
         elif kind == 'corner':
             box = [q for q in mates if pt.in_box(q.pos[0], q.pos[1], a) and not q.keeper]
             if box and m.rng.random() < 0.75:
@@ -508,12 +516,13 @@ class TeamAI:
                 react = 0.02
             if seen >= react:
                 lateral = abs(ty - k.pos[1])
+                spot_kick = m.shootout or (m.restart and m.restart['kind'] == 'penalty')
                 if lateral > 0.55 or tz > 1.85:
-                    if tc < 0.5:
-                        # Penalty: a decent keeper reads the taker, otherwise it's a guess
-                        if m.shootout or (m.restart and m.restart['kind'] == 'penalty'):
+                    if tc < 0.5 or spot_kick:
+                        # Penalty: he has to go as it's struck, so it's mostly a guess
+                        if spot_kick:
                             side = 1 if ty > 0 else -1
-                            if m.rng.random() > 0.42 + 0.18 * k.fb.reflexes:
+                            if m.rng.random() > 0.34 + 0.12 * k.fb.reflexes:
                                 side = -side
                             ty = side * m.rng.uniform(0.4, 1.0) * m.pitch.goal_width / 2.0
                             tz = m.rng.uniform(0.3, 1.6)

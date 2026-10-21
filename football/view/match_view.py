@@ -91,6 +91,20 @@ class MatchView:
         n.hide()
         return n
 
+    def _card(self, size, tex, col, alpha, order):
+        """An upright marker that always faces the camera (drawn on top of everything)."""
+        holder = self.root.attach_new_node('card')
+        n = self._flat(size, size, tex, col, alpha, order)
+        n.reparent_to(holder)
+        n.set_p(90)
+        n.set_two_sided(True)
+        n.set_depth_test(False)
+        n.set_bin('fixed', order)
+        n.show()
+        holder.set_billboard_point_eye()
+        holder.hide()
+        return holder
+
     def _guides(self):
         """Pass target, through-ball lane, next switch and the offside line (Match.guide)."""
         ring = T.ring(128, (1, 1, 1), 0.24)
@@ -109,6 +123,12 @@ class MatchView:
                 bank_hit=self._flat(1.1 * k, 1.1 * k, glow, (1, 1, 1), 0.8, 18)))
         pt = self.match.pitch
         self.offside_line = self._flat(0.1, pt.width, None, (1.0, 0.95, 0.35), 0.55, 16)
+        # Penalty aim: a target ring standing on the goal mouth, and the keeper's chosen dive
+        self.reticle = []
+        for i in range(len(self.match.controllers)):
+            col = MARKER_COLORS[i % len(MARKER_COLORS)]
+            self.reticle.append((self._card(0.75, ring, col, 1.0, 40), self._card(0.2, glow, (1, 1, 1), 1.0, 41)))
+        self.dive_mark = self._card(1.0, glow, (1.0, 0.85, 0.2), 0.8, 39)
         self.guide_cache = [None] * len(self.match.controllers)
         self.guide_t = 0.0
 
@@ -122,6 +142,35 @@ class MatchView:
         node.set_pos((x0 + x1) / 2.0, (y0 + y1) / 2.0, z)
         node.set_h(math.degrees(math.atan2(y1 - y0, x1 - x0)) - 90.0)
         node.set_sy(d)
+
+    def _sync_penalty(self, live):
+        m = self.match
+        r = m.restart
+        pending = live and r and r['kind'] == 'penalty' and not r.get('taken') and m.state in ('restart', 'kickoff')
+        humans = {c.team.idx for c in m.controllers}
+        for i, (ring, dot) in enumerate(self.reticle):
+            c = m.controllers[i] if i < len(m.controllers) else None
+            # Head to head on one screen the other player would see it, so it stays hidden
+            show = pending and c and c.pen_aim is not None and r['team'] is c.team and len(humans) < 2
+            if show:
+                gx = c.team.opp_goal_x(m.pitch)
+                y, z = c.pen_aim
+                ring.show()
+                dot.show()
+                ring.set_pos(gx - c.team.attack * 0.1, y, z)
+                dot.set_pos(gx - c.team.attack * 0.12, y, z)
+                ring.set_scale(1.0 + 0.12 * math.sin(self.t * 6.0) + (0.5 * c.charge if c.charge else 0.0))
+            else:
+                ring.hide()
+                dot.hide()
+        k = r['team'].opp.keeper() if pending else None
+        commit = getattr(k, 'pen_commit', None) if k is not None else None
+        if commit is not None and k.team.idx in humans and len(humans) < 2:
+            gx = k.team.own_goal_x(m.pitch)
+            self.dive_mark.show()
+            self.dive_mark.set_pos(gx + k.team.attack * 0.2, commit[0], commit[1])
+        else:
+            self.dive_mark.hide()
 
     def _sync_guides(self, dt, live):
         m = self.match
@@ -238,6 +287,7 @@ class MatchView:
             if tn.get_text() != text:
                 tn.set_text(text)
         self._sync_guides(dt, snapshot is None)
+        self._sync_penalty(snapshot is None)
         # Crowd
         self.world.update(dt, self.t, self.excite)
         self.excite = max(0.0, self.excite - dt * 0.15)
@@ -257,7 +307,11 @@ class MatchView:
             # Zoom in a touch when the ball is near either goal
             if abs(ball[0]) > m.pitch.half_length * 0.6:
                 zoom = 1.08
-            self.cam.update(dt, ball, focus, attack, zoom)
+            if m.penalty_cam():
+                r = m.restart
+                self.cam.penalty(dt, r['pos'], r['team'].attack, ball)
+            else:
+                self.cam.update(dt, ball, focus, attack, zoom)
 
     def destroy(self):
         self.root.remove_node()

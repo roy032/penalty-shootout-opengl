@@ -118,7 +118,7 @@ class Footballer:
     """Everything the match needs to know about one player."""
 
     def __init__(self, key, name, number, look, keeper=False, women=False, stats=None, gk=None, aura=0.5,
-                 glow=None, foot='R', celebration=None, era='club'):
+                 glow=None, foot='R', celebration=None, era='club', pen=None):
         self.key = key
         self.name = name
         self.number = number
@@ -136,6 +136,9 @@ class Footballer:
         self.foot = foot
         self.celebration = celebration
         self.era = era
+        # Spot-kick ratings from the penalty game: composure, power, placement
+        self.pen = pen or (0.5 + 0.4 * self.shooting * (0.6 + 0.4 * aura), 0.4 + 0.5 * self.shooting,
+                           0.35 + 0.55 * self.shooting)
 
     def overall(self):
         if self.keeper:
@@ -159,7 +162,8 @@ def from_character(key, number=None):
     glow = tuple(ch['glow']) if ch.get('glow') else CH.GLOWS.get(ch['era'], CH.GLOWS['mod'])
     return Footballer(key, ch['name'], ch['number'] if number is None else number, dict(ch['look']),
                       keeper=gk is not None, women=ch['women'], stats=st, gk=gk, aura=ch['aura'], glow=glow,
-                      foot=ch['foot'], celebration=ch['celebration'], era=ch['era'])
+                      foot=ch['foot'], celebration=ch['celebration'], era=ch['era'],
+                      pen=(ch['composure'], ch['power'], ch['placement']))
 
 
 def club_player(club, i, keeper=False):
