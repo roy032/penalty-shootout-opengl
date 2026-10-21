@@ -30,6 +30,14 @@ LINES = {
     'pen_scored': ["Scores!", "Cool as you like.", "No mistake."],
     'pen_missed': ["MISSED!", "Saved! Huge moment!", "It's been missed!"],
     'chip': ["The cheeky chip from {name}!"],
+    'kickoff_rain': ["We're under way, and it's teeming down!", "Kick-off in the rain. Expect it to skid."],
+    'kickoff_snow': ["Snow on the pitch and the orange ball is out!", "A winter wonderland, and we're off!"],
+    'kickoff_wind': ["A swirling wind here. Lofted balls will be a lottery!", "We're off, and the wind is up."],
+    'slip': ["{name} loses his footing!", "Down goes {name} on the wet grass!"],
+    'tip': ["Fingertips from {name}! Corner.", "What a save from {name}, tipped behind!"],
+    'one_two': ["Give and go from {name}!", "Lovely one-two, {name} is in!", "{name} plays it and gets it straight back!"],
+    'time_waste': ["They're in no hurry over this one.", "Taking their time here. The fans aren't happy."],
+    'keeper_up': ["The keeper's coming up for this!", "Everyone forward, even the goalkeeper!"],
     'bank': ["{name} plays it off the boards!", "Clever from {name}, using the wall!",
              "One-two with the wall from {name}!"],
 }
@@ -108,8 +116,20 @@ class Commentary:
                 offer(self._pick('bank', name=name(e['who'])), 1)
             elif t == 'pass' and e.get('kind') == 'through' and self.cool <= 0 and self.rng.random() < 0.4:
                 offer(self._pick('through', name=name(e['who'])), 0)
+            elif t == 'kickoff' and match.weather['key'] != 'clear' and match.half == 1 and match.time < 1.0:
+                offer(self._pick('kickoff_' + match.weather['key']), 2)
             elif t in ('halftime', 'fulltime', 'kickoff', 'shootout'):
                 offer(self._pick(t), 2)
+            elif t == 'one_two':
+                offer(self._pick('one_two', name=name(e['to'])), 2)
+            elif t == 'time_waste' and self.rng.random() < 0.6:
+                offer(self._pick('time_waste'), 1)
+            elif t == 'keeper_up':
+                offer(self._pick('keeper_up'), 3)
+            elif t == 'slip':
+                offer(self._pick('slip', name=name(e['who'])), 1)
+            elif t == 'parry' and e.get('tip'):
+                offer(self._pick('tip', name=name(e['who'])), 2)
             elif t == 'pen_result':
                 offer(self._pick('pen_scored' if e['scored'] else 'pen_missed'), 2)
             elif t == 'out' and e.get('kind') == 'corner':

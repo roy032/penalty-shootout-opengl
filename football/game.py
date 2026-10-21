@@ -23,6 +23,8 @@ from .view.inputs import ACTIONS, LABELS as ACTION_LABELS, Inputs, key_label
 from .view.match_view import MatchView
 from .view.menus import Menu, Row
 
+WEATHER_OPTIONS = [('clear', 'Clear'), ('rain', 'Rain'), ('snow', 'Snow'), ('wind', 'Windy'), ('random', 'Surprise me')]
+
 HALVES = [(60.0, '1 min halves'), (90.0, '1.5 min halves'), (150.0, '2.5 min halves'), (240.0, '4 min halves'),
           (360.0, '6 min halves'), (600.0, '10 min halves')]
 
@@ -32,7 +34,8 @@ class MatchSession:
         s = app.settings
         size, pitch = A.FORMATS[s['format']]
         cfg = dict(size=size, pitch=pitch, half_seconds=s['half'] if not attract else 120.0,
-                   difficulty=s['difficulty'], preset=s['preset'], auto_switch=s['auto_switch'])
+                   difficulty=s['difficulty'], preset=s['preset'], auto_switch=s['auto_switch'],
+                   weather=s['weather'] if not attract else 'random')
         if cup:
             cfg = app.cup.tie_settings(cfg)
         self.app = app
@@ -374,6 +377,8 @@ class FootballApp(ShowBase):
             Row('Style', options=[('arcade', 'Arcade'), ('authentic', 'Authentic')], get=g('preset'),
                 set=st('preset'), help='Authentic: slower, less accurate, offside on full pitches'),
             Row('Time', options=[(True, 'Night, floodlights'), (False, 'Day')], get=g('night'), set=st('night')),
+            Row('Weather', options=WEATHER_OPTIONS, get=g('weather'), set=st('weather'),
+                help='Rain: a quick, skiddy ball and slippery keepers. Snow: it dies on the turf. Wind: watch your lobs'),
             Row('PLAY', lambda: self.start_match()),
         ], back=self.main_menu, footer='Left and right change an option.')
 

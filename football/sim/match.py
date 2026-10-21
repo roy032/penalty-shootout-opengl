@@ -6,7 +6,7 @@ import math
 import random
 
 from . import ball as B
-from . import roster
+from . import roster, weather
 from .styles import style_for
 from .ball import Ball
 from .pitch import PITCHES
@@ -15,6 +15,7 @@ from .player import Player, CONTROL, REACH_HEAD, norm, ang_diff
 FIXED_DT = 1.0 / 60.0
 PEN_SWEET = (0.55, 0.82)    # spot-kick power that is struck cleanly: above it the ball climbs
 LATE_GRACE = 0.13           # a press this soon after the ball slips off your foot still plays it
+ONE_TWO_HOLD = 0.22        # seconds pass must stay held after a pass to send the passer on a run
 EARLY_TACKLE = 0.25         # a tackle pressed this early still goes in when the man takes his touch
 
 # Formations as (role, fx, fy): fx runs -1 (own goal line) .. +1 (opponent's), fy -1 .. +1 across
@@ -98,6 +99,8 @@ class Controller:
         self.charge_kind = None
         self.lock_t = 0.0           # no auto-switch right after a manual one
         self.queued = None          # first-time action waiting for the ball
+        self.one_two = None         # give-and-go: the passer bursting forward while pass is held
+        self.one_two_pending = False
         self.queue_t = 0.0
         self.move = (0.0, 0.0)      # this tick's stick, for the first touch
         self.held = frozenset()
@@ -127,6 +130,10 @@ class Match:
         if s['offside'] is None:
             s['offside'] = self.pitch.offside and s['preset'] == 'authentic'
         self.ball = Ball(self.pitch)
+        self.weather = weather.pick(s['weather'], random.Random('weather%s' % seed))
+        self.ball.friction = self.weather['friction']
+        self.ball.skid = self.weather['skid']
+        self.ball.wind = self.weather['wind_vec']
         # Small goals are close: shots arrive sooner, so keepers get a little more reach
         self.small_goal = 1.0 + max(0.0, (5.5 - self.pitch.goal_width)) * 0.3
         size = s['size']
@@ -171,6 +178,8 @@ class Match:
             if s['preset'] == 'authentic':
                 t.error_scale *= 1.35
                 t.speed_scale *= 0.94
+        for t in self.teams:
+            t.speed_scale *= self.weather['pace']
         if s['perks']:
             # Cup Run perks belong to the home side (the player's team)
             from .cuprun import apply_perks
@@ -652,6 +661,10 @@ class Match:
         if q:
             # One-touch pass or a first-time strike
             self._perform(p, q)
+            if c is not None and c.one_two_pending and q[0] == 'through' and len(q) > 2 and q[2] is not None:
+                self.emit('one_two', who=self._idx(p), to=self._idx(q[2]))
+            if c is not None:
+                c.one_two_pending = False
             return
         rvx, rvy = b.vel[0] - p.vel[0], b.vel[1] - p.vel[1]
         rel = math.hypot(rvx, rvy)
@@ -785,7 +798,7 @@ class Match:
         shot = b.last_touch is not None and b.last_touch.team is not k.team and sp > 9.0
         if not self._note_touch(k):
             return
-        catch = 9.0 + 14.0 * k.fb.handling
+        catch = (9.0 + 14.0 * k.fb.handling) * self.weather['catch']
         if k.state == 'dive':
             catch *= 0.72
         if sp < catch or self.rng.random() < 0.25 * k.fb.handling:
@@ -1230,6 +1243,10 @@ class Match:
             return True
         # Missed: a moment to recover; sometimes he clips the man
         p.set_state('tackle', 0.55, 'miss')
+        if self.weather['slip'] and self.rng.random() < self.weather['slip']:
+            # Wet grass: his standing foot goes
+            p.set_state('down', 0.9, 'slip')
+            self.emit('slip', who=self._idx(p))
         if behind and o.immune <= 0:
             if self.settings['fouls'] and self.rng.random() < 0.25:
                 self._foul(p, o, severity=0.4)
@@ -1651,6 +1668,8 @@ class Match:
         p = c.player
         if p is None or p.sent_off:
             return
+        if c.one_two is not None and self._one_two(c, p, inp, dt):
+            return
         mx, my = inp.move
         mag = min(1.0, math.hypot(mx, my))
         stick = norm(mx, my) if mag > 0.2 else None
@@ -1730,6 +1749,8 @@ class Match:
                     return
             if 'pass' in inp.pressed:
                 self.do_pass(p, stick, 'ground')
+                if self.pass_target and self.pass_target[0] is not None and c.player is not p:
+                    c.one_two = dict(runner=p, t=0.0, running=False)
             elif 'through' in inp.pressed:
                 self.do_pass(p, stick, 'through')
             elif 'lob' in inp.pressed:
@@ -1785,6 +1806,37 @@ class Match:
             c.tackle_t = EARLY_TACKLE
         if 'shoot' in inp.pressed:
             c.charge = 0.0
+
+    def _one_two(self, c, p, inp, dt):
+        """Give-and-go: keep pass held after a pass and the passer bursts forward; let go and the
+        ball goes straight back into his path. A quick tap is just a pass. True if it played the ball."""
+        o = c.one_two
+        runner = o['runner']
+        o['t'] += dt
+        b = self.ball
+        if o['t'] > 3.0 or runner.sent_off or (b.owner is not None and b.owner.team is not c.team) \
+                or self.state != 'play':
+            c.one_two = None
+            return False
+        if 'pass' in inp.held:
+            if o['t'] > ONE_TWO_HOLD:
+                o['running'] = True
+                runner.run_t = 0.4
+            return False
+        if not o['running']:
+            c.one_two = None
+            return False
+        # Released: return it first time, or as soon as it arrives
+        c.one_two = None
+        runner.run_t = 1.2
+        if b.owner is p:
+            self.do_pass(p, None, 'through', runner)
+            self.emit('one_two', who=self._idx(p), to=self._idx(runner))
+            return True
+        c.queued = ('through', None, runner)
+        c.queue_t = 0.9
+        c.one_two_pending = True
+        return False
 
     # ---------------------------------------------------------- penalties
     def penalty_limits(self):

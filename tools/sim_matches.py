@@ -6,6 +6,7 @@ Run from the repo root:
     python tools/sim_matches.py --home legends --away cult --json out.json
     python tools/sim_matches.py --replay 1234 --home stars --away myths   # re-run one seed
     python tools/sim_matches.py --compare-styles -n 60  # every style against every other, identical squads
+    python tools/sim_matches.py --weather random      # mixed rain, snow and wind
 
 Prints goals, shots, passing, fouls and set pieces per match, a table of team
 styles, and every stuck state found (with the seed to replay it). Exits with
@@ -40,6 +41,7 @@ def main(argv=None):
     ap.add_argument('--difficulty', default='pro')
     ap.add_argument('--preset', choices=['arcade', 'authentic'], default='arcade')
     ap.add_argument('--half', type=float, default=150.0, help='seconds per half (default 150)')
+    ap.add_argument('--weather', choices=['clear', 'rain', 'snow', 'wind', 'random'], default='clear')
     ap.add_argument('--home', help='team id (default: random each match)')
     ap.add_argument('--away', help='team id (default: random each match)')
     ap.add_argument('--seed', type=int, default=1, help='first seed')
@@ -51,7 +53,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     cfg = dict(size=FORMATS[a.format], pitch=a.format, half_seconds=a.half, difficulty=a.difficulty,
-               preset=a.preset)
+               preset=a.preset, weather=a.weather)
     teams = roster.team_ids()
     if a.replay is not None:
         r = soak.play(a.home or 'stars', a.away or 'legends', cfg, a.replay)

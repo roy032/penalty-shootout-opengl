@@ -9,6 +9,7 @@ from . import geom as G
 from . import textures as T
 from .camera import Camera
 from .models import Ball, Footballer
+from .weather_fx import WeatherFx
 from .world import World
 
 MARKER_COLORS = [(0.25, 0.75, 1.0), (1.0, 0.35, 0.3), (0.4, 1.0, 0.45), (1.0, 0.85, 0.2)]
@@ -27,7 +28,11 @@ class MatchView:
             for p in t.players:
                 self.models[(t.idx, p.idx)] = Footballer(self.root, p.fb, t.info, keeper=p.keeper, quality=quality)
         self.ball = Ball(self.root, quality)
+        if match.weather['key'] == 'snow':
+            # An orange ball, so you can see it
+            self.ball.node.set_color_scale(1.0, 0.55, 0.15, 1)
         self.cam = Camera(base, match.pitch, cam_mode)
+        self.weather = WeatherFx(base, self.world, match.weather, quality)
         self.t = 0.0
         self.excite = 0.0
         self._markers()
@@ -312,8 +317,10 @@ class MatchView:
                 self.cam.penalty(dt, r['pos'], r['team'].attack, ball)
             else:
                 self.cam.update(dt, ball, focus, attack, zoom)
+        self.weather.update(dt, self.base.camera.get_pos(self.base.render))
 
     def destroy(self):
         self.root.remove_node()
+        self.weather.destroy()
         self.world.root.remove_node()
         self.world.sky.remove_node()

@@ -45,10 +45,31 @@ class TeamAI:
             if p is k:
                 self._keeper(p, dt)
                 continue
+            if p.run_t > 0 and m.state == 'play':
+                # Give-and-go: burst into the space ahead and wait for it back
+                p.run_t -= dt
+                a = self.team.attack
+                p.target = m.pitch.clamp_inside(p.pos[0] + a * 6.0, p.pos[1] * 0.85, 1.0)
+                p.want_speed = p.top_speed()
+                p.sprint = p.stamina > 0.1
+                continue
             p.brain_t -= dt
             if p.brain_t <= 0:
                 p.brain_t = self.team.ai_react * (0.6 + 0.8 * m.rng.random()) + 0.04
                 self._think(p)
+
+    def game_state(self):
+        """'protect' when leading in the last fifth of the second half (or extra time),
+        'chase' when behind by one or two then, otherwise None."""
+        m = self.match
+        if m.half not in (2, 4) or m.time < m.half_length() * 0.8 or m.shootout:
+            return None
+        diff = self.team.score - self.team.opp.score
+        if diff > 0:
+            return 'protect'
+        if -2 <= diff < 0:
+            return 'chase'
+        return None
 
     # ======================================================== team level
     def _team_plan(self):
@@ -381,6 +402,13 @@ class TeamAI:
         own = -a * pt.half_length
         if near < 1.6 and abs(p.pos[0] - own) < pt.length * 0.3:
             options.append((0.25 + rng.uniform(-noise, noise), 'clear'))
+        if self.game_state() == 'protect':
+            # Seeing it out: only a clear chance is worth a shot; up the pitch, take it to the corner flag
+            options = [(v - (0.3 if k == 'shoot' and sx < 0.25 else 0.0), k) for v, k in options]
+            if p.pos[0] * a > pt.half_length * 0.45 and near > 1.2:
+                cx, cy = a * pt.half_length, math.copysign(pt.half_width, p.pos[1] or 1.0)
+                best_drib = (0.6, norm(cx - p.pos[0], cy - p.pos[1]), 3.0)
+                options.append((0.6 + rng.uniform(-noise, noise), 'dribble'))
         options.sort(key=lambda o: -o[0])
         choice = options[0][1] if options else 'dribble'
         # Don't pass the instant it arrives unless pressed
@@ -418,6 +446,12 @@ class TeamAI:
         wait = 0.6 if r['kind'] == 'kickoff' else 1.0
         if r['kind'] == 'penalty':
             wait = 1.4
+        elif r['kind'] != 'kickoff' and self.game_state() == 'protect':
+            # Running the clock down
+            wait += 2.5
+            if not r.get('wasting'):
+                r['wasting'] = True
+                m.emit('time_waste', team=self.team.idx)
         if r['t'] < wait:
             p.target = None
             return
@@ -481,6 +515,16 @@ class TeamAI:
             if r['kind'] == 'penalty' and r['team'] is not t:
                 k.target = None
                 k.vel = [0.0, 0.0]
+                return
+            if r['kind'] == 'corner' and r['team'] is t and self.game_state() == 'chase' and \
+                    m.time > m.half_length() * 0.9:
+                # Last throw of the dice: the keeper goes up for it
+                if not r.get('keeper_up'):
+                    r['keeper_up'] = True
+                    m.emit('keeper_up', who=m._idx(k))
+                k.target = (-gx * 0.82, 0.0)
+                k.want_speed = k.top_speed()
+                k.sprint = True
                 return
         # Holding the ball: look up, then distribute
         if b.holder is k:

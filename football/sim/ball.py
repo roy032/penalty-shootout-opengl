@@ -67,6 +67,8 @@ class Ball:
         self.last_touch = None
         self.in_net = 0                 # side of the goal it is in, 0 if not
         self.friction = 1.0             # >1 on heavy or wet pitches
+        self.skid = 0.78                # pace kept through a bounce (more on a wet pitch)
+        self.wind = (0.0, 0.0)          # m/s, pushes the ball while it's in the air
         self.knuckle = 0.0
         self.flight_t = 0.0
 
@@ -105,7 +107,7 @@ class Ball:
         g.pos = list(self.pos)
         g.vel = list(self.vel)
         g.spin = list(self.spin)
-        g.friction = self.friction
+        g.friction, g.skid, g.wind = self.friction, self.skid, self.wind
         n = max(1, int(t / dt))
         for _ in range(n):
             g._integrate(t / n)
@@ -117,7 +119,7 @@ class Ball:
         g.pos = list(self.pos)
         g.vel = list(self.vel)
         g.spin = list(self.spin)
-        g.friction = self.friction
+        g.friction, g.skid, g.wind = self.friction, self.skid, self.wind
         out = []
         n = max(1, int(t / dt))
         for _ in range(n):
@@ -131,9 +133,11 @@ class Ball:
         sp = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
         air = p[2] > RADIUS + 0.01 or v[2] > 0.01
         if air:
-            # Drag and Magnus (spin x velocity)
-            ax = -DRAG * sp * v[0] + MAGNUS * (w[1] * v[2] - w[2] * v[1])
-            ay = -DRAG * sp * v[1] + MAGNUS * (w[2] * v[0] - w[0] * v[2])
+            # Drag (against the air, which moves with the wind) and Magnus (spin x velocity)
+            rx, ry = v[0] - self.wind[0], v[1] - self.wind[1]
+            rs = math.sqrt(rx * rx + ry * ry + v[2] * v[2])
+            ax = -DRAG * rs * rx + MAGNUS * (w[1] * v[2] - w[2] * v[1])
+            ay = -DRAG * rs * ry + MAGNUS * (w[2] * v[0] - w[0] * v[2])
             az = -DRAG * sp * v[2] + MAGNUS * (w[0] * v[1] - w[1] * v[0]) - GRAVITY
             if self.knuckle and self.flight_t > 0.15:
                 ph = self.flight_t
@@ -164,7 +168,7 @@ class Ball:
             if v[2] < -0.9:
                 v[2] = -v[2] * BOUNCE
                 # The grass takes some pace off each bounce
-                keep = 0.78
+                keep = self.skid
                 v[0] *= keep
                 v[1] *= keep
                 w[0] *= 0.5

@@ -58,6 +58,7 @@ class Player:
         self.dribble_t = 0.0
         self.knock_t = 0.0
         self.immune = 0.0           # brief protection after a skill move
+        self.run_t = 0.0            # bursting forward on a give-and-go
         self.receiving = False
 
     # --------------------------------------------------------------- helpers

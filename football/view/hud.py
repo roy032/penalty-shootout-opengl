@@ -9,6 +9,7 @@ from panda3d.core import TextNode, TransparencyAttrib
 
 from .inputs import key_label
 from ..sim.match import PEN_SWEET
+from .weather_fx import wind_text
 
 PANEL = (0.03, 0.04, 0.07, 0.78)
 GOLD = (1.0, 0.82, 0.3, 1)
@@ -42,6 +43,11 @@ class Hud:
                                  pos=(0.0, 0, -0.135))
         self.clock_t = _txt(self.clock, "0'", (0.1, -0.048), 0.045, align=TextNode.A_center, font=font)
         self.pens = _txt(self.board, '', (0.335, -0.2), 0.042, (1, 1, 1, 1), TextNode.A_center, font=font)
+        # Weather, and which way the wind blows for the first human's side
+        att = match.controllers[0].team.attack if match.controllers else a.attack
+        self.wx = _txt(self.board, wind_text(match.weather, att), (0.22, -0.183), 0.036, (0.85, 0.9, 1.0, 1),
+                       font=font)
+        self.wx_att = att
         # Banner
         self.banner = _txt(base.aspect2d, '', (0, 0.28), 0.16, GOLD, TextNode.A_center, font=font)
         self.sub = _txt(base.aspect2d, '', (0, 0.18), 0.06, (1, 1, 1, 1), TextNode.A_center, font=font)
@@ -128,6 +134,11 @@ class Hud:
         m = self.m
         a, b = m.teams
         self.score.setText('%d - %d' % (a.score, b.score))
+        att = m.controllers[0].team.attack if m.controllers else a.attack
+        if att != self.wx_att:
+            # Ends changed at half-time, so the wind did too
+            self.wx_att = att
+            self.wx.setText(wind_text(m.weather, att))
         minute = int(m.clock())
         self.clock_t.setText("%d'" % min(minute + 1, 90 if m.half <= 2 else 120) if not m.shootout else 'PENS')
         if m.shootout:

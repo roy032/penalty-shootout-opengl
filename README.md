@@ -26,6 +26,9 @@ What is in this first version:
 - **Forgiving controls**: a pass or shot pressed a split second after the ball runs off your foot still counts, an early tackle still goes in, and the stick steers your first touch (leave it alone to kill the ball dead, push it across your body to turn, sprint to knock it into space).
 - **Wall passes**: in the cage, passes go off the boards when a defender is in the way, for you (the guide bends off the wall to show it) and for the computer.
 - **Penalties**: one system for penalties in a match and the shootout. Aim a ring with the stick, hold shoot and release in the sweet zone of the power bar (too hard and it flies over), E to curl it, lob for a Panenka. In goal, pick a dive with the stick and a button before the kick. Takers use the composure, power and placement ratings from the classic game, and the shootout shows each side's chances of winning.
+- **Weather** (Kick off menu): rain gives a quick, skiddy ball, slippery keepers and tacklers who lose their footing; snow slows the ball right down (and it turns orange); wind carries lofted balls, and the HUD says which way it blows. Rain and snow fall in the stadium.
+- **Give-and-go**: keep pass held after a pass and the passer bursts forward; let go and the ball comes straight back into his path. A quick tap is still just a pass.
+- **Game management**: a side leading late takes its time over restarts and runs the ball into the corner; a side chasing the game sends its keeper up for a last-minute corner.
 - **Pitch guides** (Settings or Pause, on by default): a ring under the team-mate your pass will find, the through-ball lane, a white ring under the player a switch would give you, and the offside line on Authentic full pitches.
 - **Presentation**: a floodlit stadium with crowds that react, a broadcast camera (plus tactical, end-to-end and third-person cameras), goal replays, captions from the commentary, a radar, and a scoreboard and HUD that scale with the window.
 
@@ -44,7 +47,7 @@ What is in this first version:
 | Skill move | Space | Enter | LT |
 | Pause | Esc | | Start |
 
-**Soak test and balance report** (no window needed): `python tools/sim_matches.py -n 200 --format full` plays CPU v CPU matches flat out and prints goals, shots, passing, fouls and set pieces, how each team style plays (`--compare-styles` uses identical squads), and any stuck states (a crash, a dead ball, a restart nobody takes, players outside the ground) with the seed to replay them (`--replay SEED`).
+**Soak test and balance report** (no window needed): `python tools/sim_matches.py -n 200 --format full` plays CPU v CPU matches flat out and prints goals, shots, passing, fouls and set pieces, how each team style plays (`--compare-styles` uses identical squads), and any stuck states (a crash, a dead ball, a restart nobody takes, players outside the ground) with the seed to replay them (`--replay SEED`). `--weather random` mixes in rain, snow and wind. Matches are deterministic: the same seed and the same inputs always play out the same way, which is tested.
 
 Keys can be changed under Controls; a key that is already in use swaps with the other action. Settings are saved in `~/.ultimate_football/`.
 

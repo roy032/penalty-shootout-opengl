@@ -11,7 +11,7 @@ SETTINGS = os.path.join(HOME, 'settings.json')
 
 DEFAULTS = dict(quality='high', camera='broadcast', difficulty='pro', half=150, preset='arcade', format='cage',
                 hints=True, volume=0.8, crowd=0.8, fullscreen=False, home='stars', away='legends', mode='1p',
-                night=True, auto_switch=True, matches=0, guides=True)
+                night=True, auto_switch=True, matches=0, guides=True, weather='clear')
 
 FORMATS = {'cage': (5, 'cage'), 'fives': (5, 'fives'), 'sevens': (7, 'sevens'), 'full': (11, 'full')}
 FORMAT_LABELS = [('cage', 'Cage 5-a-side (walls)'), ('fives', '5-a-side'), ('sevens', '7-a-side'),
