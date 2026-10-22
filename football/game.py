@@ -14,7 +14,9 @@ from panda3d.core import TextNode, WindowProperties
 from . import app as A
 import json
 
-from .sim import challenges, inputlog, roster
+from .sim import challenges, highlights, inputlog, records, roster
+from .sim.crossbar import Crossbar
+from .sim.tournament import Tournament
 from .sim.cuprun import PERKS, CupRun
 from .sim.styles import style_for
 from .sim.match import FIXED_DT, DIFFICULTY, Match
@@ -29,25 +31,35 @@ WEATHER_OPTIONS = [('clear', 'Clear'), ('rain', 'Rain'), ('snow', 'Snow'), ('win
 
 REPLAYS = os.path.join(A.HOME, 'replays')
 CHALLENGES = os.path.join(A.HOME, 'challenges.json')
+RECORDS = os.path.join(A.HOME, 'records.json')
 
 HALVES = [(60.0, '1 min halves'), (90.0, '1.5 min halves'), (150.0, '2.5 min halves'), (240.0, '4 min halves'),
           (360.0, '6 min halves'), (600.0, '10 min halves')]
 
 
 class MatchSession:
-    def __init__(self, app, home, away, humans, attract=False, shootout_only=False, cup=False, log=None):
+    def __init__(self, app, home, away, humans, attract=False, shootout_only=False, cup=False, log=None,
+                 windows=None, crossbar=False, tie=None):
         s = app.settings
         self.app = app
         self.attract = attract
         self.cup = cup
+        self.tie = tie                  # tournament night game, if this is one
         self.rec = None
         self.reader = None
+        self.log = log
+        self.windows = list(windows) if windows else None
+        self.clip = 0
+        self.cb = None
         self.speed = 1
         self.watch_paused = False
         if log is not None:
             # Watching a saved match: the same setup, fed the recorded inputs
             self.match = inputlog.make_match(log)
             self.reader = inputlog.Reader(log)
+        elif crossbar:
+            self.cb = Crossbar(s['home'], seed=random.randrange(1 << 30))
+            self.match = self.cb.m
         else:
             size, pitch = A.FORMATS[s['format']]
             cfg = dict(size=size, pitch=pitch, half_seconds=s['half'] if not attract else 120.0,
@@ -67,7 +79,7 @@ class MatchSession:
         if 'golden_ball' in app.unlocked() and self.match.weather['key'] != 'snow':
             self.view.ball.node.set_color_scale(1.0, 0.82, 0.3, 1)
         self.watch_text = None
-        if log is not None:
+        if log is not None or crossbar:
             self.watch_text = OnscreenText(text='', parent=app.a2dTopRight, pos=(-0.05, -0.1), scale=0.045,
                                            fg=(1, 0.82, 0.3, 1), align=TextNode.A_right, shadow=(0, 0, 0, 0.8),
                                            mayChange=True)
@@ -101,7 +113,27 @@ class MatchSession:
             cam.mode = CAM_MODES[(CAM_MODES.index(cam.mode) + 1) % len(CAM_MODES)] if cam.mode in CAM_MODES \
                 else CAM_MODES[0]
         state = 'PAUSED' if self.watch_paused else 'x%d' % self.speed
-        self.watch_text.setText('REPLAY  %s\nJ pause   K speed   Q camera   Esc menu' % state)
+        title = 'HIGHLIGHTS  %d of %d' % (min(self.clip + 1, len(self.windows)), len(self.windows)) \
+            if self.windows else 'REPLAY'
+        self.watch_text.setText('%s  %s\nJ pause   K speed   Q camera   Esc menu' % (title, state))
+
+    def _skip_to_clip(self):
+        """Highlights: jump the replay to the next clip, simulating the gap with nothing drawn.
+        Returns False once the last clip is over."""
+        r = self.reader
+        while self.clip < len(self.windows) and r.tick >= self.windows[self.clip][1]:
+            self.clip += 1
+        if self.clip >= len(self.windows):
+            return False
+        start = self.windows[self.clip][0]
+        if r.tick < start - 1:
+            while r.tick < start - 1 and not r.done:
+                self.match.step(r.next())
+            self.replay_due = None
+            if self.hud:
+                self.hud.caption(self.windows[self.clip][2] == 'goal' and 'Goal' or 'Chance')
+            self.view.cam.snap(self.match.ball.pos, None)
+        return True
 
     # ------------------------------------------------------------ the loop
     def update(self, dt):
@@ -122,10 +154,28 @@ class MatchSession:
         while self.acc >= FIXED_DT and steps < 8 * self.speed:
             inputs = {}
             if self.reader is not None:
+                if self.windows is not None and not self._skip_to_clip():
+                    self.acc = 0.0
+                    if not self.done:
+                        self.done = True
+                        app.match_over(self)
+                    return
                 if self.reader.done:
                     self.acc = 0.0
                     break
                 inputs = self.reader.next()
+            elif self.cb is not None:
+                for c in m.controllers:
+                    inputs[c.index] = app.inputs.read(c.index, axes)
+                evs = self.cb.step(inputs)
+                self._events(evs)
+                self.acc -= FIXED_DT
+                steps += 1
+                if self.cb.done and not self.done:
+                    self.done = True
+                    app.match_over(self)
+                    return
+                continue
             elif not self.attract:
                 for c in m.controllers:
                     inputs[c.index] = inputlog.quantize(app.inputs.read(c.index, axes))
@@ -141,6 +191,10 @@ class MatchSession:
         self.view.sync(dt)
         if self.hud:
             self.hud.update(dt)
+        if self.cb is not None:
+            best = self.app.records.get('crossbar_best', 0)
+            self.watch_text.setText('CROSSBAR CHALLENGE   %d points   %d s left\nBest %d.   Bar 3, post 1, in off +1'
+                                    % (self.cb.score, self.cb.time_left() + 0.99, best))
         self.comm.update(dt)
         if app.audio and not self.attract:
             app.audio.update(dt, self.view.excite)
@@ -176,7 +230,7 @@ class MatchSession:
                     who = m.teams[sc[0]].players[sc[1]].fb.name if sc else ''
                     sub = ('%s  %d\'' % (who, int(m.clock()) + 1)) if not e.get('own') else 'Own goal: %s' % who
                     hud.flash('GOAL!', sub, 3.0)
-                    if not self.attract:
+                    if not self.attract and self.windows is None:
                         self.replay_due = 1.6
             elif t == 'shot':
                 v.excite = max(v.excite, 0.6)
@@ -201,6 +255,11 @@ class MatchSession:
                 hud.flash('FULL TIME', ('%s WIN' % w.name) if w else 'A DRAW', 3.0, (1, 1, 1, 1))
             elif hud and t == 'shootout':
                 hud.flash('PENALTIES', 'Best of five', 2.5)
+            elif hud and t == 'cb_kick':
+                labels = dict(bar='CROSSBAR!', post='POST!', in_off='IN OFF THE WOODWORK!', goal='IN THE NET',
+                              miss='MISSED')
+                hud.flash(labels[e['kind']], '+%d' % e['points'] if e['points'] else '', 1.0,
+                          (1, 0.82, 0.3, 1) if e['points'] else (1, 1, 1, 1))
             elif hud and t == 'pen_result':
                 hud.flash('SCORED' if e['scored'] else 'MISSED', '', 1.2,
                           (0.5, 1, 0.5, 1) if e['scored'] else (1, 0.4, 0.4, 1))
@@ -255,6 +314,9 @@ class FootballApp(ShowBase):
         self.cup = None
         self.progress = self._load_progress()
         self.news = []
+        self.records = self._load_json(RECORDS, {})
+        self.tourney = None
+        self.last_log = None
         self.inputs = Inputs(self, os.path.join(A.HOME, 'controls.json'))
         self.audio = None
         try:
@@ -381,8 +443,17 @@ class FootballApp(ShowBase):
             self._quit_to_menu()
             self.replays_menu()
             return
+        if session.cb is not None:
+            self.crossbar_result(session.cb)
+            return
         if session.rec is not None:
-            inputlog.save(session.rec.to_dict(session.match), REPLAYS)
+            self.last_log = session.rec.to_dict(session.match)
+            inputlog.save(self.last_log, REPLAYS)
+        records.update(self.records, session.match)
+        self._save_json(RECORDS, self.records)
+        if session.tie is not None:
+            self.tourney_result(session.match, session.tie)
+            return
         self.news = self._record_challenges(session.match) if not session.cup else []
         if session.cup:
             self.cup_result(session.match)
@@ -398,6 +469,10 @@ class FootballApp(ShowBase):
             Row('Cup Run', self.cup_menu, help='Four knockout ties, harder each round. Pick a perk after every win'),
             Row('Penalty shootout', lambda: self.start_match(shootout_only=True),
                 help='Best of five from the spot, then sudden death'),
+            Row('Tournament night', self.tourney_setup, help='A knockout for 2 to 8 players, two at a time'),
+            Row('Crossbar challenge', lambda: self.start_crossbar(),
+                help='A minute to hit the bar from the edge of the box'),
+            Row('Hall of fame', self.hall_menu, help='Career goals, wins and awards for every character'),
             Row('Challenges', self.challenges_menu, help='Things to do in matches. They unlock a golden ball and a hidden team'),
             Row('Replays', self.replays_menu, help='Watch your last %d matches again, from any camera' % inputlog.KEEP),
             Row('Classic penalty game', self.launch_classic, help='The original Penalty Shootout game'),
@@ -546,7 +621,7 @@ class FootballApp(ShowBase):
             Row('Camera', options=[(k, CAM_LABELS[k]) for k in CAM_MODES], get=lambda: s['camera'], set=cam),
             Row('Control hints', options=[(True, 'On'), (False, 'Off')], get=lambda: s['hints'], set=hints),
             Row('Pitch guides', options=[(True, 'On'), (False, 'Off')], get=lambda: s['guides'], set=guides),
-        ] + ([] if se.reader else [
+        ] + ([] if se.reader or se.cb else [
             Row('Restart match', lambda: self.start_match(shootout_only=bool(se.match.shootout and se.match.half == 1)))]) + [
             Row('Quit to main menu', self._quit_to_menu),
         ], back=self._resume, width=1.1)
@@ -592,7 +667,7 @@ class FootballApp(ShowBase):
         title = '%s  %d - %d  %s' % (a.name, a.score, b.score, b.name)
         if m.shootout:
             title += '   (%d-%d pens)' % (sum(a.pens), sum(b.pens))
-        menu = Menu(self, 'FULL TIME', [
+        menu = Menu(self, 'FULL TIME', ([Row('Watch highlights', self.watch_highlights)] if self.last_log else []) + [
             Row('Rematch', lambda: self.start_match()),
             Row('Swap teams', self._swap_and_play),
             Row('Main menu', self._quit_to_menu),
@@ -605,6 +680,131 @@ class FootballApp(ShowBase):
             text += '\n\n' + '\n'.join(lines[:8])
         OnscreenText(text=text, parent=menu.root, pos=(0, 0.47), scale=0.042, fg=(0.92, 0.94, 1, 1),
                      align=TextNode.A_center)
+
+    # ------------------------------------------------------------ highlights, records, mini-games
+    def _load_json(self, path, default):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            return data if isinstance(data, type(default)) else default
+        except (OSError, ValueError):
+            return default
+
+    def _save_json(self, path, data):
+        try:
+            os.makedirs(A.HOME, exist_ok=True)
+            with open(path + '.tmp', 'w') as f:
+                json.dump(data, f)
+            os.replace(path + '.tmp', path)
+        except OSError:
+            pass
+
+    def watch_highlights(self, log=None):
+        log = log or self.last_log
+        clips = highlights.find(log)
+        if not clips:
+            return
+        self.clear_menus()
+        self.end_session()
+        self.session = MatchSession(self, None, None, None, log=log, windows=clips)
+
+    def hall_menu(self):
+        self.clear_menus()
+        rec = self.records
+
+        def block(title, key, unit):
+            rows = records.table(rec, key, 6)
+            if not rows:
+                return '%s\n   nobody yet' % title
+            return title + '\n' + '\n'.join('   %s  %d %s  (%d apps)' % (r['name'], r[key], unit, r['apps'])
+                                              for r in rows)
+        menu = Menu(self, 'HALL OF FAME', [Row('Back', self.main_menu)], back=self.main_menu, y0=-0.78,
+                    subtitle='%d matches played.   Crossbar challenge best: %d' % (rec.get('matches', 0),
+                                                                                 rec.get('crossbar_best', 0)))
+        OnscreenText(text=block('Top scorers', 'goals', 'goals'), parent=menu.root, pos=(-0.32, 0.45), scale=0.04,
+                     fg=(0.92, 0.94, 1, 1), align=TextNode.A_center)
+        OnscreenText(text=block('Players of the match', 'motm', 'awards') + '\n\n' + block('Most saves', 'saves', 'saves'),
+                     parent=menu.root, pos=(0.32, 0.45), scale=0.04, fg=(0.92, 0.94, 1, 1), align=TextNode.A_center)
+
+    def start_crossbar(self):
+        self.clear_menus()
+        self.end_session()
+        self.session = MatchSession(self, None, None, ((0, 0),), crossbar=True)
+
+    def crossbar_result(self, cb):
+        best = self.records.get('crossbar_best', 0)
+        new_best = cb.score > best
+        if new_best:
+            self.records['crossbar_best'] = cb.score
+            self._save_json(RECORDS, self.records)
+        counts = {}
+        for k, _ in cb.kicks:
+            counts[k] = counts.get(k, 0) + 1
+        detail = ', '.join('%s %d' % (dict(bar='bar', post='post', in_off='in off', goal='goals', miss='misses')[k], n)
+                           for k, n in sorted(counts.items()))
+        Menu(self, 'NEW BEST!' if new_best else 'TIME UP', [
+            Row('Try again', self.start_crossbar),
+            Row('Main menu', self._quit_to_menu),
+        ], subtitle='%d points from %d kicks   (%s)' % (cb.score, len(cb.kicks), detail or 'no kicks'),
+            back=self._quit_to_menu)
+
+    # ------------------------------------------------------------ tournament night
+    def tourney_setup(self):
+        self.clear_menus()
+        s = self.settings
+        s.setdefault('tourney_n', 4)
+        Menu(self, 'TOURNAMENT NIGHT', [
+            Row('Players', options=[(n, '%d players' % n) for n in range(2, 9)], get=lambda: s['tourney_n'],
+                set=lambda v: s.__setitem__('tourney_n', v)),
+            Row('Format', options=A.FORMAT_LABELS, get=lambda: s['format'], set=lambda v: s.__setitem__('format', v)),
+            Row('Match length', options=HALVES, get=lambda: s['half'], set=lambda v: s.__setitem__('half', v)),
+            Row('Draw the bracket', self._new_tourney),
+            Row('Back', self.main_menu),
+        ], back=self.main_menu, subtitle='Two at a time: one on the keyboard (or pad 1), one on arrows (or pad 2)')
+
+    def _new_tourney(self):
+        n = self.settings.get('tourney_n', 4)
+        self.tourney = Tournament(['Player %d' % (i + 1) for i in range(n)], seed=random.randrange(1 << 30))
+        self.tourney_menu()
+
+    def tourney_menu(self, news=''):
+        t = self.tourney
+        self.clear_menus()
+        nxt = t.next_match()
+        rows = []
+        if nxt:
+            ri, g = nxt
+            pa, pb = t.players[g['a']], t.players[g['b']]
+            rows.append(Row('Play: %s v %s' % (pa['name'], pb['name']), lambda: self._play_tie(g),
+                            help='%s (%s) on the keyboard or pad 1, %s (%s) on arrows or pad 2' % (
+                                pa['name'], roster.team_info(pa['team'])['name'], pb['name'],
+                                roster.team_info(pb['team'])['name'])))
+            title = 'TOURNAMENT NIGHT'
+        else:
+            title = '%s WINS!' % t.players[t.champion]['name'].upper()
+            rows.append(Row('New tournament', self.tourney_setup))
+        rows.append(Row('Main menu', self._quit_to_menu))
+        teams = '   '.join('%s: %s' % (p['name'], roster.team_info(p['team'])['short']) for p in t.players)
+        menu = Menu(self, title, rows, back=self._quit_to_menu, y0=-0.5, subtitle=teams)
+        OnscreenText(text=(news + '\n\n' if news else '') + '\n'.join(t.lines()), parent=menu.root, pos=(0, 0.46),
+                     scale=0.042, fg=(0.92, 0.94, 1, 1), align=TextNode.A_center)
+
+    def _play_tie(self, g):
+        t = self.tourney
+        self.clear_menus()
+        self.end_session()
+        self.session = MatchSession(self, t.players[g['a']]['team'], t.players[g['b']]['team'], ((0, 0), (1, 1)),
+                                    tie=g)
+
+    def tourney_result(self, m, g):
+        a, b = m.teams
+        t = self.tourney
+        t.record(g, a.score, b.score, (sum(a.pens), sum(b.pens)) if m.shootout else None)
+        w = t.players[g['winner']]['name']
+        self.end_session()
+        self.attract()
+        self.tourney_menu('%s go through: %s %d - %d %s%s' % (
+            w, a.short, a.score, b.score, b.short, ' (%d-%d pens)' % (sum(a.pens), sum(b.pens)) if m.shootout else ''))
 
     # ------------------------------------------------------------ challenges
     def _load_progress(self):

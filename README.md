@@ -31,6 +31,10 @@ What is in this first version:
 - **Game management**: a side leading late takes its time over restarts and runs the ball into the corner; a side chasing the game sends its keeper up for a last-minute corner.
 - **Replays**: every match is saved as its seed plus every input (a few KB) and can be watched again from the Replays menu at 1x, 2x or 4x, from any camera. The newest 20 are kept.
 - **Challenges**: eight things to do (beat the Legends with a club side, a hat-trick, a comeback from two down, a snow-day win...). Three unlock a golden ball, five unlock the hidden Dream XI.
+- **Highlights**: after full time, "Watch highlights" replays just the goals, the big saves and the shots off the woodwork.
+- **Hall of fame**: career goals, appearances, wins, saves and player-of-the-match awards for every character, kept across matches.
+- **Crossbar challenge**: 60 seconds to hit the bar from outside the box. Bar 3 points, post 1, in off the woodwork +1. Your best is saved.
+- **Tournament night**: 2 to 8 players each get a team and play a knockout bracket of cage matches, with penalties if it is level.
 - **Half-time changes**: a computer side that is behind, or keeps getting caught by through balls, long shots or crosses, changes its tactics at the break and the commentary says how.
 - **Keeper out**: hold lob (I) while defending to send your keeper charging at the man on the ball.
 - **Pitch guides** (Settings or Pause, on by default): a ring under the team-mate your pass will find, the through-ball lane, a white ring under the player a switch would give you, and the offside line on Authentic full pitches.

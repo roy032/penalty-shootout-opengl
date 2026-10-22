@@ -39,7 +39,7 @@ DIFFICULTY = {
 
 DEFAULTS = dict(size=5, pitch='cage', half_seconds=150.0, difficulty='pro', preset='arcade', fouls=True,
                 cards=True, offside=None, decider='penalties', assist=True, auto_switch=True, weather='clear',
-                stamina=True, extra_time=False, styles=None, perks=())
+                stamina=True, extra_time=False, styles=None, perks=(), rules=True)
 
 
 class Team:
@@ -430,7 +430,8 @@ class Match:
         if self.state == 'play' or (self.state in ('kickoff', 'restart') and self.restart.get('taken')):
             self._touches()
             self._slides()
-            self._check_ball_rules()
+            if self.settings['rules']:
+                self._check_ball_rules()
         if self.state == 'restart' and self.restart.get('taken'):
             self.state = 'play'
         if self.state == 'kickoff' and self.restart.get('taken'):
