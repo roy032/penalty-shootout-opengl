@@ -1,6 +1,5 @@
 """Headless tests for the football match engine (no Panda3D needed)."""
 
-import math
 
 import pytest
 

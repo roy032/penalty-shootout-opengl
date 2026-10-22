@@ -17,8 +17,14 @@ import tempfile
 os.environ['HOME'] = os.environ['USERPROFILE'] = tempfile.mkdtemp(prefix='shootout-shot-')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from OpenGL.GL import *  # noqa: E402,F401,F403
-from OpenGL.GLUT import *  # noqa: E402,F401,F403
+from OpenGL.GL import (  # noqa: E402
+    GL_BACK, GL_PACK_ALIGNMENT, GL_RGB, GL_UNSIGNED_BYTE, glPixelStorei,
+    glReadBuffer, glReadPixels, glViewport)
+from OpenGL.GLUT import (  # noqa: E402
+    GLUT_ACTION_GLUTMAINLOOP_RETURNS, GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_DEPTH,
+    GLUT_DOUBLE, GLUT_RGBA, glutCreateWindow, glutDisplayFunc, glutInit,
+    glutInitDisplayMode, glutInitWindowSize, glutLeaveMainLoop, glutMainLoop,
+    glutPostRedisplay, glutSetOption, glutSwapBuffers, glutTimerFunc)
 
 from shootout import app, controls, gfx, hud, render  # noqa: E402
 from shootout.game import Game  # noqa: E402
