@@ -223,3 +223,170 @@ def test_same_seed_and_inputs_give_the_same_match():
     a, b = scripted(11), scripted(11)
     assert a == b
     assert scripted(12) != a
+
+
+def test_a_recorded_match_replays_exactly_through_json():
+    import json
+    from football.sim import inputlog
+    cfg = dict(size=5, pitch='cage', half_seconds=20.0, weather='random', perks=('boots',))
+    m = Match('stars', 'legends', settings=cfg, humans=((0, 0), (1, 1)), seed=21)
+    rec = inputlog.Recorder('stars', 'legends', cfg, ((0, 0), (1, 1)), 21)
+    hashes = []
+    i = 0
+    prev = {0: set(), 1: set()}
+    while m.state != 'fulltime' and i < 60 * 80:
+        inputs = {}
+        for c in (0, 1):
+            inp = Input()
+            ph = (i + c * 17) // 25
+            inp.move = (math.cos(ph * 1.7 + c) * 0.73219, math.sin(ph * 0.9) * 0.51177)
+            held = set()
+            if (i + c * 5) % 41 < 3:
+                held.add('pass')
+            if (i + c * 11) % 97 < 20:
+                held.add('shoot')
+            if (i // 60) % 3 == c:
+                held.add('sprint')
+            inp.held, inp.pressed, inp.released = held, held - prev[c], prev[c] - held
+            prev[c] = held
+            inputs[c] = inputlog.quantize(inp)
+        rec.add(inputs)
+        m.step(inputs)
+        if i % 30 == 0:
+            hashes.append(state_hash(m))
+        i += 1
+    log = json.loads(json.dumps(rec.to_dict(m)))
+    assert log['result']['score'] == [m.teams[0].score, m.teams[1].score]
+    import gzip
+    assert len(gzip.compress(json.dumps(log).encode())) < 40000, 'small enough to keep every match'
+    r = inputlog.Reader(log)
+    m2 = inputlog.make_match(log)
+    again = []
+    j = 0
+    while not r.done:
+        m2.step(r.next())
+        if j % 30 == 0:
+            again.append(state_hash(m2))
+        j += 1
+    assert again == hashes and m2.state == m.state
+
+
+def test_replays_are_saved_listed_and_pruned(tmp_path, monkeypatch):
+    from football.sim import inputlog
+    monkeypatch.setattr(inputlog, 'KEEP', 3)
+    rec = inputlog.Recorder('stars', 'legends', {}, ((0, 0),), 5)
+    rec.add({0: Input()})
+    paths = []
+    import time as T
+    for k in range(5):
+        monkeypatch.setattr(T, 'strftime', lambda f, k=k: '2026102%d-000000' % k if '%H%M%S' in f else 'x')
+        paths.append(inputlog.save(rec.to_dict(), str(tmp_path)))
+    left = inputlog.listing(str(tmp_path))
+    assert len(left) == 3 and left[0] == paths[-1]
+    assert inputlog.load(left[0])['seed'] == 5
+
+
+def finished(home='reds', away='legends', goals=(), settings=None, pens=None):
+    """A Match marked finished with the given goals [(team, name, own)]."""
+    m = Match(home, away, settings=settings, humans=((0, 0),), seed=1)
+    for t, name, own in goals:
+        m.teams[t].score += 1
+        m.log.append(dict(kind='goal', team=t, name=name, own=own, minute=10))
+    m.half = 2
+    if pens:
+        m.start_shootout()
+        m.teams[0].pens, m.teams[1].pens = list(pens[0]), list(pens[1])
+    a, b = m.teams
+    m.winner = a if (a.score, sum(a.pens)) > (b.score, sum(b.pens)) else (b if (a.score, sum(a.pens)) <
+                                                                                (b.score, sum(b.pens)) else None)
+    m.state = 'fulltime'
+    return m
+
+
+def test_challenges_from_a_finished_match():
+    from football.sim import challenges as C
+    m = finished(goals=[(1, 'PELE', False), (1, 'PELE', False), (0, 'X', False), (0, 'Y', False), (0, 'X', False)])
+    done = C.check(m)
+    assert {'first_win', 'giant_killer', 'comeback'} <= done and 'hat_trick' not in done
+    m = finished('legends', 'reds', goals=[(0, 'HENRY', False)] * 3,
+                 settings=dict(pitch='cage', difficulty='legendary', weather='snow'))
+    done = C.check(m)
+    assert {'first_win', 'hat_trick', 'fortress', 'snow_day'} <= done and 'giant_killer' not in done
+    m = finished(pens=([1, 1, 1], [0, 0, 1]))
+    assert 'ice_cold' in C.check(m)
+    assert C.check(finished(goals=[(1, 'PELE', False)])) == set()
+    assert 'champions' in C.check(finished(goals=[(0, 'X', False)]), cup_won=True)
+    # Nobody to credit when both sides are human
+    m = Match('stars', 'legends', humans=((0, 0), (1, 1)), seed=1)
+    assert C.check(m) == set()
+
+
+def test_dream_team_is_hidden_until_unlocked():
+    from football.sim import challenges as C, roster
+    assert 'dream' not in roster.team_ids()
+    assert 'dream' in roster.team_ids(C.rewards(C.IDS[:5]))
+    assert C.rewards(C.IDS[:2]) == set() and C.rewards(C.IDS[:3]) == {'golden_ball'}
+    squad = roster.squad('dream', 11)
+    assert squad[0].keeper and len({p.number for p in squad}) == 11
+
+
+def test_goals_are_labelled_by_how_they_came():
+    m = Match('stars', 'legends', humans=(), seed=1)
+    t = m.teams[0]
+    m.last_pass = dict(team=0, kind='through', tick=m.ticks)
+    assert m._goal_type(t, False) == 'through'
+    m.shot_from = dict(team=0, x=t.opp_goal_x(m.pitch) - t.attack * 15.0, y=0.0, tick=m.ticks, header=False)
+    assert m._goal_type(t, False) == 'long'
+    assert m._goal_type(t, True) == 'own'
+
+
+def test_a_side_carved_open_by_through_balls_drops_deeper_at_half_time():
+    m = Match('stars', 'legends', humans=((0, 0),), seed=1)
+    cpu = m.ai[1]
+    line0 = cpu.style['line']
+    for _ in range(2):
+        m.teams[0].score += 1
+        m.log.append(dict(kind='goal', team=0, name='X', own=False, minute=5, how='through'))
+    evs = []
+    m.events = evs
+    assert cpu.half_time_talk() == 'deeper' and cpu.style['line'] < line0
+    assert m.teams[1].style is cpu.style
+    assert any(e['type'] == 'tactics' for e in m.events)
+    assert m.ai[0].half_time_talk() is None, 'the human side picks its own tactics'
+
+
+def test_behind_with_nothing_obvious_the_ai_goes_for_it():
+    m = Match('stars', 'legends', humans=(), seed=1)
+    cpu = m.ai[1]
+    fwd = cpu.style['forward']
+    m.teams[0].score = 1
+    m.log.append(dict(kind='goal', team=0, name='X', own=False, minute=5, how='close'))
+    assert cpu.half_time_talk() == 'attack' and cpu.style['forward'] > fwd
+    assert m.ai[0].half_time_talk() is None, 'winning sides leave it alone'
+
+
+def test_keeper_out_sends_the_keeper_at_the_ball():
+    m = Match('stars', 'reds', settings=dict(difficulty='beginner'), humans=((0, 0),), seed=3)
+    m.state = 'play'
+    m.restart = None
+    c = m.controllers[0]
+    a = c.team.attack
+    k = c.team.keeper()
+    o = c.team.opp.players[3]
+    for q in m.all_players():
+        if q is not k:
+            q.pos = [q.pos[0], 12.0]
+    k.pos = [-a * (m.pitch.half_length - 1.0), 0.0]
+    o.pos = [-a * (m.pitch.half_length - 9.0), 0.0]
+    m.ball.place(o.pos[0], 0.0)
+    m.ball.owner = o
+    c.player = c.team.players[2]
+    start = k.dist_to(*o.pos)
+    evs = []
+    for _ in range(60):
+        o.pos = [-a * (m.pitch.half_length - 9.0), 0.0]
+        m.ball.place(o.pos[0] + a * -0.4, 0.0)
+        m.ball.owner = o
+        evs += m.step({0: hold('lob')})
+    assert any(e['type'] == 'keeper_rush' for e in evs)
+    assert k.dist_to(*o.pos) < start - 3.0

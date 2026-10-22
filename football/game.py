@@ -12,7 +12,9 @@ from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import TextNode, WindowProperties
 
 from . import app as A
-from .sim import roster
+import json
+
+from .sim import challenges, inputlog, roster
 from .sim.cuprun import PERKS, CupRun
 from .sim.styles import style_for
 from .sim.match import FIXED_DT, DIFFICULTY, Match
@@ -25,28 +27,50 @@ from .view.menus import Menu, Row
 
 WEATHER_OPTIONS = [('clear', 'Clear'), ('rain', 'Rain'), ('snow', 'Snow'), ('wind', 'Windy'), ('random', 'Surprise me')]
 
+REPLAYS = os.path.join(A.HOME, 'replays')
+CHALLENGES = os.path.join(A.HOME, 'challenges.json')
+
 HALVES = [(60.0, '1 min halves'), (90.0, '1.5 min halves'), (150.0, '2.5 min halves'), (240.0, '4 min halves'),
           (360.0, '6 min halves'), (600.0, '10 min halves')]
 
 
 class MatchSession:
-    def __init__(self, app, home, away, humans, attract=False, shootout_only=False, cup=False):
+    def __init__(self, app, home, away, humans, attract=False, shootout_only=False, cup=False, log=None):
         s = app.settings
-        size, pitch = A.FORMATS[s['format']]
-        cfg = dict(size=size, pitch=pitch, half_seconds=s['half'] if not attract else 120.0,
-                   difficulty=s['difficulty'], preset=s['preset'], auto_switch=s['auto_switch'],
-                   weather=s['weather'] if not attract else 'random')
-        if cup:
-            cfg = app.cup.tie_settings(cfg)
         self.app = app
         self.attract = attract
         self.cup = cup
-        self.match = Match(home, away, settings=cfg, humans=humans, seed=random.randrange(1 << 30))
-        if shootout_only:
-            self.match.start_shootout()
+        self.rec = None
+        self.reader = None
+        self.speed = 1
+        self.watch_paused = False
+        if log is not None:
+            # Watching a saved match: the same setup, fed the recorded inputs
+            self.match = inputlog.make_match(log)
+            self.reader = inputlog.Reader(log)
+        else:
+            size, pitch = A.FORMATS[s['format']]
+            cfg = dict(size=size, pitch=pitch, half_seconds=s['half'] if not attract else 120.0,
+                       difficulty=s['difficulty'], preset=s['preset'], auto_switch=s['auto_switch'],
+                       weather=s['weather'] if not attract else 'random')
+            if cup:
+                cfg = app.cup.tie_settings(cfg)
+            seed = random.randrange(1 << 30)
+            self.match = Match(home, away, settings=cfg, humans=humans, seed=seed)
+            if shootout_only:
+                self.match.start_shootout()
+            if not attract:
+                self.rec = inputlog.Recorder(home, away, cfg, humans, seed, shootout_only)
         self.view = MatchView(app, self.match, quality=s['quality'], night=s['night'],
-                              cam_mode='broadcast' if attract else s['camera'], guides=s['guides'])
-        self.hud = None if attract else Hud(app, self.match, app.inputs, show_hints=s['hints'])
+                              cam_mode='broadcast' if attract else s['camera'], guides=s['guides'] and not log)
+        self.hud = None if attract else Hud(app, self.match, app.inputs, show_hints=s['hints'] and not log)
+        if 'golden_ball' in app.unlocked() and self.match.weather['key'] != 'snow':
+            self.view.ball.node.set_color_scale(1.0, 0.82, 0.3, 1)
+        self.watch_text = None
+        if log is not None:
+            self.watch_text = OnscreenText(text='', parent=app.a2dTopRight, pos=(-0.05, -0.1), scale=0.045,
+                                           fg=(1, 0.82, 0.3, 1), align=TextNode.A_right, shadow=(0, 0, 0, 0.8),
+                                           mayChange=True)
         self.comm = Commentary()
         self.acc = 0.0
         self.replay = None
@@ -61,7 +85,23 @@ class MatchSession:
     def destroy(self):
         if self.hud:
             self.hud.destroy()
+        if self.watch_text:
+            self.watch_text.destroy()
         self.view.destroy()
+
+    def _watch_controls(self):
+        """While watching a saved match: J pause, K speed, Q camera."""
+        inp = self.app.inputs.read(0)
+        if 'pass' in inp.pressed:
+            self.watch_paused = not self.watch_paused
+        if 'shoot' in inp.pressed:
+            self.speed = {1: 2, 2: 4, 4: 1}[self.speed]
+        if 'switch' in inp.pressed:
+            cam = self.view.cam
+            cam.mode = CAM_MODES[(CAM_MODES.index(cam.mode) + 1) % len(CAM_MODES)] if cam.mode in CAM_MODES \
+                else CAM_MODES[0]
+        state = 'PAUSED' if self.watch_paused else 'x%d' % self.speed
+        self.watch_text.setText('REPLAY  %s\nJ pause   K speed   Q camera   Esc menu' % state)
 
     # ------------------------------------------------------------ the loop
     def update(self, dt):
@@ -73,21 +113,30 @@ class MatchSession:
         if self.replay is not None:
             self._replay(dt)
             return
-        self.acc += dt
+        if self.reader is not None:
+            self._watch_controls()
+        if not self.watch_paused:
+            self.acc += dt * self.speed
         steps = 0
         axes = self.view.cam.ground_axes()
-        while self.acc >= FIXED_DT and steps < 8:
+        while self.acc >= FIXED_DT and steps < 8 * self.speed:
             inputs = {}
-            if not self.attract:
+            if self.reader is not None:
+                if self.reader.done:
+                    self.acc = 0.0
+                    break
+                inputs = self.reader.next()
+            elif not self.attract:
                 for c in m.controllers:
-                    inputs[c.index] = app.inputs.read(c.index, axes)
+                    inputs[c.index] = inputlog.quantize(app.inputs.read(c.index, axes))
+                self.rec.add(inputs)
             evs = m.step(inputs)
             self._events(evs)
             self.acc -= FIXED_DT
             steps += 1
             if self.replay is not None:
                 break
-        if steps == 8:
+        if steps == 8 * self.speed:
             self.acc = 0.0
         self.view.sync(dt)
         if self.hud:
@@ -204,6 +253,8 @@ class FootballApp(ShowBase):
         self.menus = []
         self.session = None
         self.cup = None
+        self.progress = self._load_progress()
+        self.news = []
         self.inputs = Inputs(self, os.path.join(A.HOME, 'controls.json'))
         self.audio = None
         try:
@@ -326,6 +377,13 @@ class FootballApp(ShowBase):
         if session.attract:
             self.attract()
             return
+        if session.reader is not None:
+            self._quit_to_menu()
+            self.replays_menu()
+            return
+        if session.rec is not None:
+            inputlog.save(session.rec.to_dict(session.match), REPLAYS)
+        self.news = self._record_challenges(session.match) if not session.cup else []
         if session.cup:
             self.cup_result(session.match)
             return
@@ -340,6 +398,8 @@ class FootballApp(ShowBase):
             Row('Cup Run', self.cup_menu, help='Four knockout ties, harder each round. Pick a perk after every win'),
             Row('Penalty shootout', lambda: self.start_match(shootout_only=True),
                 help='Best of five from the spot, then sudden death'),
+            Row('Challenges', self.challenges_menu, help='Things to do in matches. They unlock a golden ball and a hidden team'),
+            Row('Replays', self.replays_menu, help='Watch your last %d matches again, from any camera' % inputlog.KEEP),
             Row('Classic penalty game', self.launch_classic, help='The original Penalty Shootout game'),
             Row('Controls', self.controls_menu, help='See and change the keys'),
             Row('Settings', self.settings_menu, help='Graphics, camera, sound and assists'),
@@ -349,7 +409,7 @@ class FootballApp(ShowBase):
 
     def _team_rows(self):
         s = self.settings
-        teams = [(t, roster.team_info(t)['name']) for t in roster.team_ids()]
+        teams = [(t, roster.team_info(t)['name']) for t in roster.team_ids(self.unlocked())]
 
         def g(k):
             return lambda: s[k]
@@ -486,7 +546,8 @@ class FootballApp(ShowBase):
             Row('Camera', options=[(k, CAM_LABELS[k]) for k in CAM_MODES], get=lambda: s['camera'], set=cam),
             Row('Control hints', options=[(True, 'On'), (False, 'Off')], get=lambda: s['hints'], set=hints),
             Row('Pitch guides', options=[(True, 'On'), (False, 'Off')], get=lambda: s['guides'], set=guides),
-            Row('Restart match', lambda: self.start_match(shootout_only=bool(se.match.shootout and se.match.half == 1))),
+        ] + ([] if se.reader else [
+            Row('Restart match', lambda: self.start_match(shootout_only=bool(se.match.shootout and se.match.half == 1)))]) + [
             Row('Quit to main menu', self._quit_to_menu),
         ], back=self._resume, width=1.1)
 
@@ -537,10 +598,84 @@ class FootballApp(ShowBase):
             Row('Main menu', self._quit_to_menu),
         ], subtitle=title, back=self._quit_to_menu, y0=-0.42, width=1.2)
         text = '\n'.join(stats) + '\n\nPlayer of the match: %s' % motm.fb.name
+        if self.news:
+            text = '\n'.join(self.news) + '\n\n' + text
+            lines = lines[:4]
         if lines:
             text += '\n\n' + '\n'.join(lines[:8])
         OnscreenText(text=text, parent=menu.root, pos=(0, 0.47), scale=0.042, fg=(0.92, 0.94, 1, 1),
                      align=TextNode.A_center)
+
+    # ------------------------------------------------------------ challenges
+    def _load_progress(self):
+        try:
+            with open(CHALLENGES) as f:
+                return set(json.load(f).get('done', [])) & set(challenges.IDS)
+        except (OSError, ValueError, AttributeError):
+            return set()
+
+    def unlocked(self):
+        return challenges.rewards(self.progress)
+
+    def _record_challenges(self, m, cup_won=False):
+        """Note what this match completed; returns lines to show for anything new."""
+        before = self.unlocked()
+        new = challenges.check(m, cup_won) - self.progress
+        if not new:
+            return []
+        self.progress |= new
+        try:
+            os.makedirs(A.HOME, exist_ok=True)
+            with open(CHALLENGES, 'w') as f:
+                json.dump(dict(done=sorted(self.progress)), f)
+        except OSError:
+            pass
+        names = dict((c[0], c[1]) for c in challenges.CHALLENGES)
+        out = ['Challenge complete: %s' % names[k] for k in challenges.IDS if k in new]
+        for need, key, label, _ in challenges.REWARDS:
+            if key in self.unlocked() - before:
+                out.append('UNLOCKED: %s' % label)
+        return out
+
+    def challenges_menu(self):
+        self.clear_menus()
+        rows = []
+        for key, label, desc in challenges.CHALLENGES:
+            rows.append(Row(('[x]  ' if key in self.progress else '[  ]  ') + label, None, help=desc))
+        rows.append(Row('Back', self.main_menu))
+        have = self.unlocked()
+        n = len(self.progress)
+        reward = '   '.join('%s %s (%d)' % ('Unlocked:' if key in have else 'Locked:', label, need)
+                           for need, key, label, _ in challenges.REWARDS)
+        Menu(self, 'CHALLENGES', rows, back=self.main_menu, y0=0.4,
+             subtitle='%d of %d done.   %s' % (n, len(challenges.IDS), reward))
+
+    # ------------------------------------------------------------ replays
+    def replays_menu(self):
+        self.clear_menus()
+        rows = []
+        for path in inputlog.listing(REPLAYS)[:9]:
+            try:
+                log = inputlog.load(path)
+            except (OSError, ValueError):
+                continue
+            res = log.get('result') or {}
+            names = res.get('names') or [log['home'], log['away']]
+            score = res.get('score') or ['?', '?']
+            label = '%s %s - %s %s' % (names[0], score[0], score[1], names[1])
+            if res.get('pens'):
+                label += ' (%d-%d pens)' % tuple(res['pens'])
+            fmt = dict(A.FORMAT_LABELS).get(res.get('pitch'), '')
+            rows.append(Row(label, (lambda log=log: self.watch_replay(log)), help='%s   %s' % (log['date'], fmt)))
+        if not rows:
+            rows.append(Row('No replays yet: play a match first', self.main_menu))
+        rows.append(Row('Back', self.main_menu))
+        Menu(self, 'REPLAYS', rows, back=self.main_menu, subtitle='Every match is saved. Watch from any camera.')
+
+    def watch_replay(self, log):
+        self.clear_menus()
+        self.end_session()
+        self.session = MatchSession(self, None, None, None, log=log)
 
     # ------------------------------------------------------------ cup run
     def cup_menu(self):
@@ -585,6 +720,7 @@ class FootballApp(ShowBase):
         a, b = m.teams
         tie = cup.tie()
         won = cup.record((a.score, b.score), (sum(a.pens), sum(b.pens)) if m.shootout else None)
+        news = self._record_challenges(m, cup_won=cup.champion)
         score = '%s  %d - %d  %s' % (a.name, a.score, b.score, b.name)
         if m.shootout:
             score += '   (%d-%d pens)' % (sum(a.pens), sum(b.pens))
@@ -604,6 +740,8 @@ class FootballApp(ShowBase):
         text = '\n'.join(cup.bracket_lines())
         if won and not cup.champion:
             text += '\n\nPick a perk for the rest of the run'
+        if news:
+            text += '\n\n' + '\n'.join(news)
         OnscreenText(text=text, parent=menu.root, pos=(0, 0.42), scale=0.048, fg=(0.92, 0.94, 1, 1),
                      align=TextNode.A_center)
 

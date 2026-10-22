@@ -94,7 +94,14 @@ TEAMS = {
                  socks=(0.1, 0.55, 0.25), keeper=(0.95, 0.4, 0.7), trim=(1.0, 1.0, 1.0),
                  keepers=['higuita', 'chilavert', 'ceni', 'dudek', 'lehmann', 'neuer'],
                  players=['grosso', 'pearce', 'balotelli', 'panenka', 'jorginho', 'grealish', 'rashford']),
+    # Unlocked by finishing challenges (sim/challenges.py)
+    'dream': dict(name='DREAM XI', short='DRM', shirt=(0.08, 0.08, 0.1), shorts=(0.95, 0.78, 0.22),
+                  socks=(0.08, 0.08, 0.1), keeper=(0.85, 0.85, 0.9), trim=(0.95, 0.78, 0.22),
+                  keepers=['yashin', 'casillas', 'neuer'],
+                  players=['pele', 'maradona', 'messi', 'r9', 'zidane', 'marta', 'bonmati', 'ronaldo', 'henry',
+                           'beckham', 'gerrard', 'bronze', 'valkyrie', 'mbappe', 'pirlo']),
 }
+HIDDEN = {'dream'}      # not offered until unlocked
 
 # Club sides made of generated players, using the shootout's team colours
 CLUBS = [
@@ -179,8 +186,9 @@ def club_player(club, i, keeper=False):
                       aura=0.3, era='club')
 
 
-def team_ids():
-    return list(TEAMS) + [c[0] for c in CLUBS]
+def team_ids(unlocked=()):
+    """Every team on offer: the character teams, any unlocked hidden ones, then the clubs."""
+    return [t for t in TEAMS if t not in HIDDEN or t in unlocked] + [c[0] for c in CLUBS]
 
 
 def team_info(tid):

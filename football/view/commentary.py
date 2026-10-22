@@ -35,6 +35,7 @@ LINES = {
     'kickoff_wind': ["A swirling wind here. Lofted balls will be a lottery!", "We're off, and the wind is up."],
     'slip': ["{name} loses his footing!", "Down goes {name} on the wet grass!"],
     'tip': ["Fingertips from {name}! Corner.", "What a save from {name}, tipped behind!"],
+    'keeper_rush': ["{name} comes charging off his line!", "Out comes {name}!"],
     'one_two': ["Give and go from {name}!", "Lovely one-two, {name} is in!", "{name} plays it and gets it straight back!"],
     'time_waste': ["They're in no hurry over this one.", "Taking their time here. The fans aren't happy."],
     'keeper_up': ["The keeper's coming up for this!", "Everyone forward, even the goalkeeper!"],
@@ -120,6 +121,10 @@ class Commentary:
                 offer(self._pick('kickoff_' + match.weather['key']), 2)
             elif t in ('halftime', 'fulltime', 'kickoff', 'shootout'):
                 offer(self._pick(t), 2)
+            elif t == 'keeper_rush':
+                offer(self._pick('keeper_rush', name=name(e['who'])), 1)
+            elif t == 'tactics':
+                offer(e['text'], 3)
             elif t == 'one_two':
                 offer(self._pick('one_two', name=name(e['to'])), 2)
             elif t == 'time_waste' and self.rng.random() < 0.6:

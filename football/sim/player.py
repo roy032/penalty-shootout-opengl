@@ -59,6 +59,7 @@ class Player:
         self.knock_t = 0.0
         self.immune = 0.0           # brief protection after a skill move
         self.run_t = 0.0            # bursting forward on a give-and-go
+        self.rush_t = 0.0           # keeper sent charging at the ball by a human
         self.receiving = False
 
     # --------------------------------------------------------------- helpers

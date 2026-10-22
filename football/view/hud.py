@@ -231,6 +231,6 @@ class Hud:
                 L('pass', 'A'), L('shoot', 'B'), L('through', 'Y'), L('lob', 'X'), L('sprint', 'RT'), L('skill', 'LT'))
         own = b.owner is not None and b.owner.team is c.team
         if b.owner is not None and not own:
-            return '%s hold to press, tap to tackle | %s slide | %s switch | %s call a team-mate' % (
-                L('pass', 'A'), L('shoot', 'B'), L('switch', 'LB'), L('through', 'Y'))
+            return '%s hold to press, tap to tackle | %s slide | %s switch | %s call a team-mate | %s keeper out' % (
+                L('pass', 'A'), L('shoot', 'B'), L('switch', 'LB'), L('through', 'Y'), L('lob', 'X'))
         return '%s switch | %s or %s first-time pass or shot' % (L('switch', 'LB'), L('pass', 'A'), L('shoot', 'B'))

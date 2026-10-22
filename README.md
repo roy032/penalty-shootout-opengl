@@ -29,6 +29,10 @@ What is in this first version:
 - **Weather** (Kick off menu): rain gives a quick, skiddy ball, slippery keepers and tacklers who lose their footing; snow slows the ball right down (and it turns orange); wind carries lofted balls, and the HUD says which way it blows. Rain and snow fall in the stadium.
 - **Give-and-go**: keep pass held after a pass and the passer bursts forward; let go and the ball comes straight back into his path. A quick tap is still just a pass.
 - **Game management**: a side leading late takes its time over restarts and runs the ball into the corner; a side chasing the game sends its keeper up for a last-minute corner.
+- **Replays**: every match is saved as its seed plus every input (a few KB) and can be watched again from the Replays menu at 1x, 2x or 4x, from any camera. The newest 20 are kept.
+- **Challenges**: eight things to do (beat the Legends with a club side, a hat-trick, a comeback from two down, a snow-day win...). Three unlock a golden ball, five unlock the hidden Dream XI.
+- **Half-time changes**: a computer side that is behind, or keeps getting caught by through balls, long shots or crosses, changes its tactics at the break and the commentary says how.
+- **Keeper out**: hold lob (I) while defending to send your keeper charging at the man on the ball.
 - **Pitch guides** (Settings or Pause, on by default): a ring under the team-mate your pass will find, the through-ball lane, a white ring under the player a switch would give you, and the offside line on Authentic full pitches.
 - **Presentation**: a floodlit stadium with crowds that react, a broadcast camera (plus tactical, end-to-end and third-person cameras), goal replays, captions from the commentary, a radar, and a scoreboard and HUD that scale with the window.
 

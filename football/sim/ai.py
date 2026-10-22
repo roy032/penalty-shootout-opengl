@@ -58,6 +58,40 @@ class TeamAI:
                 p.brain_t = self.team.ai_react * (0.6 + 0.8 * m.rng.random()) + 0.04
                 self._think(p)
 
+    def half_time_talk(self):
+        """A computer side that is behind, or has been carved open, changes something at the break."""
+        m = self.match
+        t = self.team
+        if t.human:
+            return None
+        conceded = [e.get('how') for e in m.log if e['kind'] == 'goal' and e['team'] != t.idx]
+        behind = t.score < t.opp.score
+        st = dict(self.style)
+        change = None
+        if conceded.count('through') >= 2 or (behind and conceded and conceded.count('through') >= len(conceded) / 2):
+            st['line'] -= 0.08
+            st['press'] *= 0.9
+            change = ('deeper', "%s drop deeper to stop the balls in behind." % t.name.title())
+        elif conceded.count('long') >= 2:
+            st['press'] *= 1.25
+            st['line'] += 0.03
+            change = ('press', "%s will close the shooters down quicker this half." % t.name.title())
+        elif conceded.count('cross') >= 2:
+            st['width'] *= 0.9
+            change = ('narrow', "%s tighten up in the middle to deal with the crosses." % t.name.title())
+        elif behind:
+            st['forward'] += 0.15
+            st['shoot'] += 0.08
+            st['runs'] = max(1, st['runs'] - 1)
+            change = ('attack', "%s throw more men forward. They need a goal." % t.name.title())
+        if change is None:
+            return None
+        t.press *= st['press'] / max(0.01, self.style['press'])
+        self.style = st
+        t.style = st
+        m.emit('tactics', team=t.idx, kind=change[0], text=change[1])
+        return change[0]
+
     def game_state(self):
         """'protect' when leading in the last fifth of the second half (or extra time),
         'chase' when behind by one or two then, otherwise None."""
@@ -503,6 +537,16 @@ class TeamAI:
         t = self.team
         gx = t.own_goal_x(pt)
         a = t.attack
+        if k.rush_t > 0:
+            k.rush_t -= dt
+            if m.state == 'play' and b.holder is None and not k.busy():
+                # Sent out by the human: close the man down and spread himself at his feet
+                k.target = (b.pos[0], b.pos[1])
+                k.want_speed = k.top_speed()
+                k.sprint = True
+                if k.dist_to(b.pos[0], b.pos[1]) < 1.6 and b.owner is not None and b.owner.team is not t:
+                    m.keeper_dive(k, b.pos[0], b.pos[1], 0.2, 0.15)
+                return
         if m.state in ('kickoff',):
             k.target = (gx + a * 1.0, 0.0)
             k.want_speed = 4.0

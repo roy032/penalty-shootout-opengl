@@ -1083,6 +1083,7 @@ class Match:
         else:
             self.pass_target = (None, p)
         self.emit('pass', who=self._idx(p), kind=kind, to=self._idx(receiver))
+        self.last_pass = dict(team=p.team.idx, kind=kind, tick=self.ticks)
 
     def _lofted(self, p, tx, ty, hang=None):
         b = self.ball
@@ -1178,6 +1179,7 @@ class Match:
         self._shot_bookkeeping(p, power, style, header)
 
     def _shot_bookkeeping(self, p, power, style, header=False):
+        self.shot_from = dict(team=p.team.idx, x=p.pos[0], y=p.pos[1], tick=self.ticks, header=header)
         p.shots += 1
         p.team.stats['shots'] += 1
         xg = self.xg(p.pos[0], p.pos[1], p.team)
@@ -1423,7 +1425,7 @@ class Match:
         assist = None
         self.last_goal = dict(team=team.idx, scorer=self._idx(scorer), own=own, minute=minute, tick=self.ticks)
         self.log.append(dict(kind='goal', team=team.idx, name=(scorer.fb.name if scorer else '?'), own=own,
-                             minute=minute))
+                             minute=minute, how=self._goal_type(team, own)))
         self.emit('goal', team=team.idx, scorer=self._idx(scorer), own=own, assist=assist,
                   speed=b.speed(), score=(self.teams[0].score, self.teams[1].score))
         self.state = 'goal'
@@ -1459,6 +1461,22 @@ class Match:
             self.kickoff(team.opp)
 
     # ---------------------------------------------------------- halves
+    def _goal_type(self, team, own):
+        """How a goal came about, for the AI's half-time talk: through, cross, long, close or own."""
+        if own:
+            return 'own'
+        sh, ps = getattr(self, 'shot_from', None), getattr(self, 'last_pass', None)
+        if sh and sh['team'] == team.idx and self.ticks - sh['tick'] < 180:
+            gx = team.opp_goal_x(self.pitch)
+            if math.hypot(gx - sh['x'], sh['y']) > self.pitch.length * 0.2 and not sh['header']:
+                return 'long'
+        if ps and ps['team'] == team.idx and self.ticks - ps['tick'] < 300:
+            if ps['kind'] == 'through':
+                return 'through'
+            if ps['kind'] == 'lob':
+                return 'cross'
+        return 'close'
+
     def _end_half(self):
         self.whistle('half' if self.half < 2 else 'full')
         level = self.teams[0].score == self.teams[1].score
@@ -1466,6 +1484,8 @@ class Match:
             self.state = 'halftime'
             self.state_t = 0.0
             self.emit('halftime')
+            for t_ai in self.ai:
+                t_ai.half_time_talk()
         elif self.half == 2 and level and self.settings['extra_time']:
             self.state = 'halftime'
             self.state_t = 0.0
@@ -1794,6 +1814,12 @@ class Match:
                 self.do_slide(p, stick)
             if 'through' in inp.held:
                 self.ai[c.team.idx].call_press = 0.3
+            k = c.team.keeper()
+            if 'lob' in inp.held and k is not None and k is not p and b.holder is None:
+                # Keeper out: he charges the man on the ball while it's held
+                if k.rush_t <= 0:
+                    self.emit('keeper_rush', who=self._idx(k))
+                k.rush_t = 0.15
             return
 
         # Loose ball: line up a first-time action
