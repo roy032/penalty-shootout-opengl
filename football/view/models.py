@@ -8,6 +8,7 @@ from panda3d.core import NodePath, Quat, Vec3, TransparencyAttrib, TextNode
 from shootout import characters as CH
 
 from . import geom as G
+from . import shading as S
 from . import textures as T
 
 _num_cache = {}
@@ -47,7 +48,7 @@ class Footballer:
         w = float(lk.get('w', 1.0))
         if fb.women:
             w *= 0.93
-        seg = 12 if quality == 'high' else 8
+        seg = 16 if quality == 'high' else 10
         self.root = parent.attach_new_node('player')
         self.body = self.root.attach_new_node('body')
         self.body.set_scale(h, h, h)
@@ -92,7 +93,7 @@ class Footballer:
         self._hair(m, lk.get('hair', 'short'), hair, seg)
         if lk.get('headband'):
             G.cylinder(0.104, 0.104, 0.03, seg, mesh=m, base=(0, 0.005, 0.22), color=trim, caps=False)
-        self._attach(self.neck, m)
+        self._attach(self.neck, m, 'skin')
         # Arms
         long_sleeves = keeper or lk.get('sleeves') == 'long'
         gloves = CH.GLOVE_COLOURS.get(lk.get('gloves', 'white'), (0.95, 0.95, 0.95)) + (1,) if keeper else skin
@@ -104,6 +105,8 @@ class Footballer:
             G.capsule(0.052, 0.26, seg, mesh=m, color=shirt, r_top=0.06)
             if not long_sleeves:
                 G.cylinder(0.05, 0.05, 0.12, seg, mesh=m, base=(0, 0, -0.27), color=skin, caps=False)
+                # Sleeve cuff in the trim colour
+                G.cylinder(0.058, 0.056, 0.03, seg, mesh=m, base=(0, 0, -0.17), color=trim, caps=False)
             self._attach(sh, m)
             el = sh.attach_new_node('elbow')
             el.set_z(-0.27)
@@ -122,6 +125,8 @@ class Footballer:
             m = G.Mesh('thigh')
             G.capsule(0.085 * w, 0.42, seg, mesh=m, color=skin, r_top=0.09 * w)
             G.cylinder(0.098 * w, 0.094 * w, 0.2, seg, mesh=m, base=(0, 0, -0.18), color=shorts, caps=False)
+            # Hem of the shorts
+            G.cylinder(0.1 * w, 0.1 * w, 0.025, seg, mesh=m, base=(0, 0, -0.185), color=trim, caps=False)
             self._attach(hp, m)
             kn = hp.attach_new_node('knee')
             kn.set_z(-0.44)
@@ -137,7 +142,7 @@ class Footballer:
             m = G.Mesh('boot')
             G.box(0.09, 0.25, 0.085, mesh=m, center=(0, 0.05, -0.035), color=boots)
             G.box(0.085, 0.08, 0.02, mesh=m, center=(0, 0.12, -0.075), color=(0.1, 0.1, 0.1, 1))
-            self._attach(an, m)
+            self._attach(an, m, 'boots')
             self.hipj.append(hp)
             self.knees.append(kn)
             self.ankles.append(an)
@@ -146,9 +151,10 @@ class Footballer:
         self.height = h
         self._last_state = None
 
-    def _attach(self, parent, mesh):
+    def _attach(self, parent, mesh, mat='shirt'):
         n = mesh.node()
         n.reparent_to(parent)
+        S.material(n, mat)
         return n
 
     # ------------------------------------------------------- hair and beards
@@ -381,9 +387,10 @@ class Footballer:
 
 class Ball:
     def __init__(self, parent, quality='high'):
-        m = G.sphere(0.11, 20 if quality == 'high' else 12, 12)
+        m = G.sphere(0.11, 28 if quality == 'high' else 14, 16 if quality == 'high' else 10)
         self.node = m.node()
         self.node.reparent_to(parent)
+        S.material(self.node, 'ball')
         self.node.set_texture(T.ball())
         self.q = Quat()
 

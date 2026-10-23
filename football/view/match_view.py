@@ -322,5 +322,4 @@ class MatchView:
     def destroy(self):
         self.root.remove_node()
         self.weather.destroy()
-        self.world.root.remove_node()
-        self.world.sky.remove_node()
+        self.world.destroy()

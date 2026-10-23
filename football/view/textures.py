@@ -214,3 +214,262 @@ def net(size=64, cells=8):
             if x % step == 0 or y % step == 0:
                 img.set_alpha(x, y, 0.9)
     return _tex(img, 'net')
+
+
+# ---------------------------------------------------------------- numpy-painted textures
+def _from_array(arr, name, mip=True, wrap=True):
+    """Texture from a float array (h, w, 3 or 4) in 0..1, row 0 at the top."""
+    import numpy as np
+    a = np.clip(arr, 0.0, 1.0)
+    h, w, c = a.shape
+    data = (a[::-1] * 255.0 + 0.5).astype(np.uint8)
+    # Panda keeps texels as BGR(A)
+    if c == 3:
+        data = data[:, :, [2, 1, 0]]
+        fmt = Texture.F_rgb
+    else:
+        data = data[:, :, [2, 1, 0, 3]]
+        fmt = Texture.F_rgba
+    t = Texture(name)
+    t.setup_2d_texture(w, h, Texture.T_unsigned_byte, fmt)
+    t.set_ram_image(data.tobytes())
+    if mip:
+        t.set_minfilter(SamplerState.FT_linear_mipmap_linear)
+        t.set_anisotropic_degree(8)
+    else:
+        t.set_minfilter(SamplerState.FT_linear)
+    t.set_magfilter(SamplerState.FT_linear)
+    if not wrap:
+        t.set_wrap_u(SamplerState.WM_clamp)
+        t.set_wrap_v(SamplerState.WM_clamp)
+    return t
+
+
+def _value_noise(size, cells, rng):
+    """Tileable smooth value noise in 0..1."""
+    import numpy as np
+    lat = rng.random((cells, cells))
+    x = np.arange(size) / size * cells
+    i0 = np.floor(x).astype(int) % cells
+    i1 = (i0 + 1) % cells
+    f = x - np.floor(x)
+    f = f * f * (3 - 2 * f)
+    a = lat[i0][:, i0] * (1 - f)[None, :] + lat[i0][:, i1] * f[None, :]
+    b = lat[i1][:, i0] * (1 - f)[None, :] + lat[i1][:, i1] * f[None, :]
+    return a * (1 - f)[:, None] + b * f[:, None]
+
+
+def _fbm(size, base_cells, octaves, rng):
+    out = 0.0
+    amp, tot = 1.0, 0.0
+    for o in range(octaves):
+        out = out + _value_noise(size, base_cells * (2 ** o), rng) * amp
+        tot += amp
+        amp *= 0.5
+    return out / tot
+
+
+_noise_cache = {}
+
+
+def noise(size=256, seed=11):
+    """Four channels of tileable noise for the shaders: broad, medium, fine and patchy."""
+    if (size, seed) in _noise_cache:
+        return _noise_cache[(size, seed)]
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    r = _fbm(size, 4, 4, rng)
+    g = _fbm(size, 8, 3, rng)
+    b = _fbm(size, 32, 2, rng)
+    a = _fbm(size, 6, 4, rng)
+
+    def norm(c):
+        return (c - c.min()) / max(1e-6, c.max() - c.min())
+
+    t = _from_array(np.dstack([norm(r), norm(g), norm(b), norm(a)]), 'noise')
+    _noise_cache[(size, seed)] = t
+    return t
+
+
+def grass_detail(size=256, seed=3):
+    """Tileable close-up grass: thin blade streaks over fine noise, mid grey around 0.92."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    img = 0.86 + 0.14 * _fbm(size, 16, 3, rng)
+    # Blades: short bright and dark dashes, wrapped round the edges
+    for _ in range(2600):
+        x, y = rng.integers(0, size, 2)
+        ln = rng.integers(3, 9)
+        v = rng.uniform(-0.16, 0.14)
+        lean = rng.uniform(-0.4, 0.4)
+        for k in range(ln):
+            img[(y + k) % size, int(x + k * lean) % size] += v * (1 - k / ln)
+    img = np.clip(img, 0, 1.2) / 1.05
+    rgb = np.dstack([img * 0.97, img, img * 0.93])
+    return _from_array(rgb, 'grass_detail')
+
+
+def crowd2(w=1024, h=128, seed=7, colors=None, seat=(0.35, 0.36, 0.4), fill=0.88, night=True):
+    """One row of fans standing and sitting, with shoulders, arms, scarves and flags,
+    shaded top to bottom; empty seats are see-through (alpha 0)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    colors = colors or [(0.85, 0.12, 0.15), (0.15, 0.35, 0.9)]
+    skins = [(0.96, 0.8, 0.66), (0.86, 0.66, 0.5), (0.66, 0.46, 0.32), (0.44, 0.3, 0.2), (0.3, 0.2, 0.14)]
+    hairs = [(0.08, 0.06, 0.05), (0.25, 0.16, 0.08), (0.55, 0.38, 0.18), (0.8, 0.7, 0.45), (0.5, 0.5, 0.5)]
+    neutral = [(0.15, 0.15, 0.17), (0.85, 0.85, 0.85), (0.3, 0.32, 0.4), (0.45, 0.3, 0.2), (0.2, 0.35, 0.25)]
+    img = np.zeros((h, w, 4))
+    yy, xx = np.mgrid[0:h, 0:w]
+
+    def ellipse(cx, cy, rx, ry, col, alpha=1.0):
+        x0, x1 = int(max(0, cx - rx - 1)), int(min(w, cx + rx + 2))
+        y0, y1 = int(max(0, cy - ry - 1)), int(min(h, cy + ry + 2))
+        if x0 >= x1 or y0 >= y1:
+            return
+        sx, sy = xx[y0:y1, x0:x1], yy[y0:y1, x0:x1]
+        d = ((sx - cx) / rx) ** 2 + ((sy - cy) / ry) ** 2
+        m = np.clip((1.0 - d) * max(rx, ry) * 0.9, 0, 1) * alpha
+        reg = img[y0:y1, x0:x1]
+        for c in range(3):
+            reg[:, :, c] = reg[:, :, c] * (1 - m) + col[c] * m
+        reg[:, :, 3] = np.maximum(reg[:, :, 3], m)
+
+    def rect(x0, y0, x1, y1, col):
+        x0, x1 = int(max(0, x0)), int(min(w, x1))
+        y0, y1 = int(max(0, y0)), int(min(h, y1))
+        if x0 < x1 and y0 < y1:
+            img[y0:y1, x0:x1, :3] = col
+            img[y0:y1, x0:x1, 3] = 1.0
+
+    # The row is 1.25 m tall: 1 m is h / 1.25 pixels, and fans stand about 0.6 m apart
+    pm = h / 1.25
+    spacing = 0.6 * pm
+    x = rng.uniform(0, spacing)
+    while x < w - spacing * 0.5:
+        cx = x + rng.uniform(-0.05, 0.05) * pm
+        if rng.random() < fill:
+            standing = rng.random() < 0.55
+            body = colors[rng.integers(len(colors))] if rng.random() < 0.72 else neutral[rng.integers(len(neutral))]
+            body = tuple(min(1.0, c * rng.uniform(0.8, 1.1)) for c in body)
+            sk = skins[rng.integers(len(skins))]
+            hr = hairs[rng.integers(len(hairs))]
+            top = (0.2 if standing else 0.5) * pm + rng.uniform(-0.04, 0.04) * pm
+            sw = rng.uniform(0.19, 0.24) * pm
+            hd = 0.105 * pm
+            neck = top + hd * 2.0
+            # Torso: rounded shoulders down to the bottom of the row
+            ellipse(cx, neck + 0.1 * pm, sw, 0.12 * pm, body)
+            rect(cx - sw, neck + 0.1 * pm, cx + sw, h, body)
+            up = rng.random() < 0.12
+            for s in (-1, 1):
+                if up:
+                    ellipse(cx + s * (sw * 0.95), neck - 0.12 * pm, 0.06 * pm, 0.24 * pm, body)
+                    ellipse(cx + s * (sw * 1.0), neck - 0.37 * pm, 0.05 * pm, 0.055 * pm, sk)
+                else:
+                    ellipse(cx + s * (sw - 0.02 * pm), neck + 0.34 * pm, 0.055 * pm, 0.26 * pm,
+                            tuple(c * 0.82 for c in body))
+            if rng.random() < 0.35:
+                sc = colors[rng.integers(len(colors))]
+                ellipse(cx, neck + 0.04 * pm, sw * 0.62, 0.045 * pm, sc)
+                rect(cx + 0.03 * pm, neck + 0.04 * pm, cx + 0.09 * pm, neck + 0.32 * pm, sc)
+            # Neck, head and hair
+            rect(cx - 0.045 * pm, top + hd * 1.6, cx + 0.045 * pm, neck + 0.04 * pm, tuple(c * 0.85 for c in sk))
+            ellipse(cx, top + hd, hd * 0.85, hd, sk)
+            if rng.random() < 0.85:
+                ellipse(cx, top + hd * 0.45, hd * 0.92, hd * 0.6, hr)
+            if rng.random() < 0.1:
+                ellipse(cx, top + hd * 0.3, hd * 1.0, hd * 0.55, colors[rng.integers(len(colors))])
+        x += spacing * rng.uniform(0.9, 1.1)
+    # Light from above, darker towards the feet and the seat row
+    shade = np.linspace(1.08, 0.55, h)[:, None]
+    img[:, :, :3] *= shade[:, :, None] if img.ndim == 3 else shade
+    return _from_array(img, 'crowd2')
+
+
+def led_board(texts, w=1024, h=64, seed=1):
+    """LED perimeter boards: chunky letters made of glowing dots, on a dark panel."""
+    import numpy as np
+    img = np.zeros((h, w, 3))
+    block = w // max(1, len(texts))
+    pitch_px = 4
+    for i, (text, bg, fg) in enumerate(texts):
+        x0, x1 = i * block, (i + 1) * block
+        tile = PNMImage(block, h, 3)
+        tile.fill(*bg)
+        sc = max(2, min(h // 12, (block - 20) // max(1, 4 * len(text))))
+        _draw_text(tile, text, (block - (4 * len(text) - 1) * sc) // 2, h // 2, sc, fg)
+        arr = np.zeros((h, block, 3))
+        for yy in range(h):
+            for xx in range(block):
+                arr[yy, xx] = tile.get_xel(xx, yy)
+        # Gradient behind the letters, like a real advert
+        g = np.linspace(1.15, 0.75, block)[None, :, None]
+        is_bg = (np.abs(arr - np.array(bg)[None, None, :]).sum(axis=2) < 0.02)[:, :, None]
+        arr = np.where(is_bg, arr * g, arr)
+        img[:, x0:x1] = arr
+    # LED dot grid: bright cores, dim gaps
+    yy, xx = np.mgrid[0:h, 0:w]
+    dx = (xx % pitch_px) - (pitch_px - 1) / 2.0
+    dy = (yy % pitch_px) - (pitch_px - 1) / 2.0
+    dot = np.clip(1.25 - (dx * dx + dy * dy) / 3.0, 0.35, 1.0)
+    img = img * dot[:, :, None]
+    # A dark frame top and bottom
+    img[:3] *= 0.15
+    img[-3:] *= 0.15
+    return _from_array(img, 'led')
+
+
+def net2(size=128, cells=8):
+    """Net: soft-edged white strings in a square mesh (anti-aliased, so it doesn't sparkle)."""
+    import numpy as np
+    step = size / cells
+    yy, xx = np.mgrid[0:size, 0:size].astype(float)
+    dx = np.abs(((xx + 0.5) % step) - step / 2) - step / 2
+    dy = np.abs(((yy + 0.5) % step) - step / 2) - step / 2
+    d = np.minimum(-dx, -dy)
+    a = np.clip(1.6 - d, 0, 1) * 0.95
+    img = np.dstack([np.ones_like(a), np.ones_like(a), np.ones_like(a), a])
+    return _from_array(img, 'net2')
+
+
+def sky_noise():
+    return noise(256, 21)
+
+
+def line_mask(segs, width, origin, size, ppm):
+    """Anti-aliased mask of the pitch markings (white on black), for the grass shader.
+    segs are (x0, y0, x1, y1) in metres; origin and size give the area the texture covers."""
+    import numpy as np
+    W = int(size[0] * ppm)
+    H = int(size[1] * ppm)
+    img = np.zeros((H, W), dtype=np.float32)
+    half = width / 2.0 * ppm
+    for x0, y0, x1, y1 in segs:
+        ax, ay = (x0 - origin[0]) * ppm, (y0 - origin[1]) * ppm
+        bx, by = (x1 - origin[0]) * ppm, (y1 - origin[1]) * ppm
+        lo_x = max(0, int(min(ax, bx) - half - 2))
+        hi_x = min(W, int(max(ax, bx) + half + 3))
+        lo_y = max(0, int(min(ay, by) - half - 2))
+        hi_y = min(H, int(max(ay, by) + half + 3))
+        if lo_x >= hi_x or lo_y >= hi_y:
+            continue
+        yy, xx = np.mgrid[lo_y:hi_y, lo_x:hi_x].astype(np.float32) + 0.5
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy or 1.0
+        t = np.clip(((xx - ax) * dx + (yy - ay) * dy) / L2, 0.0, 1.0)
+        d = np.hypot(xx - (ax + t * dx), yy - (ay + t * dy))
+        cov = np.clip(half - d + 0.5, 0.0, 1.0)
+        reg = img[lo_y:hi_y, lo_x:hi_x]
+        np.maximum(reg, cov, out=reg)
+    # Row 0 of the array is y = origin (texture v = 0), so no flip: build the texture directly
+    data = (img * 255.0 + 0.5).astype(np.uint8)
+    t = Texture('lines')
+    t.setup_2d_texture(W, H, Texture.T_unsigned_byte, Texture.F_luminance)
+    t.set_ram_image(data.tobytes())
+    t.set_minfilter(SamplerState.FT_linear_mipmap_linear)
+    t.set_magfilter(SamplerState.FT_linear)
+    t.set_anisotropic_degree(16)
+    t.set_wrap_u(SamplerState.WM_border_color)
+    t.set_wrap_v(SamplerState.WM_border_color)
+    t.set_border_color((0, 0, 0, 0))
+    return t

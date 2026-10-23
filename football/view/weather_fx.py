@@ -86,6 +86,7 @@ class WeatherFx:
                 world.sun.node().set_color(world.sun.node().get_color() * 0.75)
                 # A wet pitch is darker and a touch shinier
                 world.pitch_node.set_color_scale(0.8, 0.86, 0.85, 1)
+                world.wet = 1.0
             else:
                 f.set_color(0.82, 0.85, 0.9) if not world.night else f.set_color(0.3, 0.32, 0.38)
                 f.set_exp_density(0.008)

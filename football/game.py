@@ -345,12 +345,18 @@ class FootballApp(ShowBase):
         if self.settings['quality'] != 'high':
             return
         try:
-            from direct.filter.CommonFilters import CommonFilters
-            self.filters = CommonFilters(self.win, self.cam)
-            if not self.filters.set_bloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.72, maxtrigger=1.0,
-                                          desat=0.2, intensity=0.9, size='medium'):
-                self.filters = None
-        except Exception:
+            from .view.shading import Post
+            self.filters = Post(self)
+        except Exception as exc:
+            print('Post effects disabled:', exc)
+            self.filters = None
+
+    def check_filters(self):
+        """Drop the post effects if the card couldn't compile them (called once a few frames in)."""
+        from .view import shading
+        if self.filters is not None and not shading.check(self):
+            print('Post effects failed to compile: turning them off')
+            self.filters.cleanup()
             self.filters = None
 
     def _window_event(self, win):
@@ -404,6 +410,9 @@ class FootballApp(ShowBase):
                     self.pause_menu()
         if self.session:
             self.session.update(dt)
+        self.frame_no = getattr(self, 'frame_no', 0) + 1
+        if self.frame_no == 4:
+            self.check_filters()
         return task.cont
 
     def clear_menus(self):

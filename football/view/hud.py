@@ -11,7 +11,7 @@ from .inputs import key_label
 from ..sim.match import PEN_SWEET
 from .weather_fx import wind_text
 
-PANEL = (0.03, 0.04, 0.07, 0.78)
+PANEL = (0.04, 0.05, 0.09, 0.85)
 GOLD = (1.0, 0.82, 0.3, 1)
 
 
@@ -30,22 +30,26 @@ class Hud:
         self.show_hints = show_hints
         a, b = match.teams
         tl = base.a2dTopLeft
-        # Scoreboard
-        self.board = DirectFrame(parent=tl, frameColor=PANEL, frameSize=(0, 0.78, -0.13, 0), pos=(0.04, 0, -0.04))
-        self.chip_a = DirectFrame(parent=self.board, frameColor=a.info['shirt'] + (1,), frameSize=(0, 0.018, -0.1, -0.03),
-                                  pos=(0.02, 0, 0))
-        self.chip_b = DirectFrame(parent=self.board, frameColor=b.info['shirt'] + (1,), frameSize=(0, 0.018, -0.1, -0.03),
-                                  pos=(0.49, 0, 0))
-        self.name_a = _txt(self.board, a.short, (0.05, -0.088), 0.055, font=font)
-        self.name_b = _txt(self.board, b.short, (0.52, -0.088), 0.055, font=font)
-        self.score = _txt(self.board, '0 - 0', (0.335, -0.09), 0.065, GOLD, TextNode.A_center, font=font)
-        self.clock = DirectFrame(parent=self.board, frameColor=(0.85, 0.12, 0.15, 0.95), frameSize=(0, 0.2, -0.065, 0),
-                                 pos=(0.0, 0, -0.135))
-        self.clock_t = _txt(self.clock, "0'", (0.1, -0.048), 0.045, align=TextNode.A_center, font=font)
-        self.pens = _txt(self.board, '', (0.335, -0.2), 0.042, (1, 1, 1, 1), TextNode.A_center, font=font)
+        # Scoreboard: a TV-style bug. Clock | home | score | away, with kit-coloured edges
+        self.board = DirectFrame(parent=tl, frameColor=PANEL, frameSize=(0, 0.96, -0.085, 0), pos=(0.04, 0, -0.04))
+        DirectFrame(parent=self.board, frameColor=(1, 1, 1, 0.06), frameSize=(0, 0.96, -0.03, 0))
+        self.clock = DirectFrame(parent=self.board, frameColor=(0.0, 0.0, 0.0, 0.55), frameSize=(0, 0.17, -0.085, 0),
+                                 pos=(0.0, 0, 0))
+        self.clock_t = _txt(self.clock, "0'", (0.085, -0.059), 0.048, align=TextNode.A_center, font=font)
+        self.chip_a = DirectFrame(parent=self.board, frameColor=a.info['shirt'] + (1,), frameSize=(0, 0.014, -0.085, 0),
+                                  pos=(0.17, 0, 0))
+        self.chip_b = DirectFrame(parent=self.board, frameColor=b.info['shirt'] + (1,), frameSize=(0, 0.014, -0.085, 0),
+                                  pos=(0.946, 0, 0))
+        self.name_a = _txt(self.board, a.short, (0.285, -0.06), 0.05, align=TextNode.A_center, font=font)
+        self.name_b = _txt(self.board, b.short, (0.83, -0.06), 0.05, align=TextNode.A_center, font=font)
+        score_box = DirectFrame(parent=self.board, frameColor=(0.96, 0.96, 0.97, 0.97), frameSize=(0.42, 0.7, -0.085, 0))
+        DirectFrame(parent=score_box, frameColor=GOLD, frameSize=(0.42, 0.7, -0.085, -0.077))
+        self.score = _txt(self.board, '0 - 0', (0.56, -0.062), 0.058, (0.05, 0.06, 0.1, 1), TextNode.A_center,
+                          shadow=False, font=font)
+        self.pens = _txt(self.board, '', (0.56, -0.15), 0.042, (1, 1, 1, 1), TextNode.A_center, font=font)
         # Weather, and which way the wind blows for the first human's side
         att = match.controllers[0].team.attack if match.controllers else a.attack
-        self.wx = _txt(self.board, wind_text(match.weather, att), (0.22, -0.183), 0.036, (0.85, 0.9, 1.0, 1),
+        self.wx = _txt(self.board, wind_text(match.weather, att), (0.0, -0.13), 0.036, (0.85, 0.9, 1.0, 1),
                        font=font)
         self.wx_att = att
         # Banner
@@ -71,7 +75,7 @@ class Hud:
         self.psweet.hide()
         self.pbar.hide()
         # Shootout win chances
-        self.odds = _txt(self.board, '', (0.335, -0.25), 0.034, (0.85, 0.9, 1.0, 1), TextNode.A_center, font=font)
+        self.odds = _txt(self.board, '', (0.56, -0.2), 0.034, (0.85, 0.9, 1.0, 1), TextNode.A_center, font=font)
         # Stamina of the player you control
         self.stam = DirectFrame(parent=base.a2dBottomCenter, frameColor=(0, 0, 0, 0.5), frameSize=(-0.2, 0.2, -0.008, 0.008),
                                 pos=(0, 0, 0.1))
@@ -81,10 +85,23 @@ class Hud:
         pt = match.pitch
         self.rw = 0.42
         self.rh = self.rw * pt.width / pt.length
-        self.radar = DirectFrame(parent=base.a2dBottomRight, frameColor=(0.05, 0.25, 0.08, 0.6),
+        self.radar = DirectFrame(parent=base.a2dBottomRight, frameColor=(0.02, 0.06, 0.04, 0.62),
                                  frameSize=(-self.rw / 2, self.rw / 2, -self.rh / 2, self.rh / 2),
                                  pos=(-self.rw / 2 - 0.05, 0, self.rh / 2 + 0.05))
-        DirectFrame(parent=self.radar, frameColor=(1, 1, 1, 0.35), frameSize=(-0.002, 0.002, -self.rh / 2, self.rh / 2))
+        # Pitch outline, halfway line, centre circle hint and boxes
+        lw, lc = 0.0025, (1, 1, 1, 0.3)
+        hw_, hh_ = self.rw / 2, self.rh / 2
+        for fs in ((-hw_, hw_, hh_ - lw, hh_), (-hw_, hw_, -hh_, -hh_ + lw), (-hw_, -hw_ + lw, -hh_, hh_),
+                   (hw_ - lw, hw_, -hh_, hh_), (-lw / 2, lw / 2, -hh_, hh_)):
+            DirectFrame(parent=self.radar, frameColor=lc, frameSize=fs)
+        bx = self.rw * pt.box_depth / pt.length
+        by = self.rh * min(pt.box_width, pt.width) / pt.width / 2
+        for sgn in (-1, 1):
+            x0 = sgn * hw_
+            x1 = x0 - sgn * bx
+            lo, hi = min(x0, x1), max(x0, x1)
+            for fs in ((lo, hi, by - lw, by), (lo, hi, -by, -by + lw), (x1 - lw / 2, x1 + lw / 2, -by, by)):
+                DirectFrame(parent=self.radar, frameColor=lc, frameSize=fs)
         self.dots = []
         for t in match.teams:
             for p in t.players:

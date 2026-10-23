@@ -59,6 +59,8 @@ What is in this first version:
 
 Keys can be changed under Controls; a key that is already in use swaps with the other action. Settings are saved in `~/.ultimate_football/`.
 
+**Graphics.** Everything is lit by the game's own GLSL shaders (`football/view/shading.py`): soft floodlight or sun shadows, sky and ground ambient light, highlights and rim light on the players, filmic tone mapping, and a pitch painted in the shader with mowing stripes that change with the camera angle, worn goalmouths, crisp anti-aliased markings and the main stand's shadow on a sunny day. The stadium is a two-tier bowl with LED boards and fascias, roofs with lights underneath, floodlight towers and a crowd of fans in both clubs' colours. *High* adds glow, a vignette and edge smoothing; *Medium* keeps the shadows; *Low* drops both. If the graphics card can't compile the shaders, the game falls back to Panda3D's built-in ones. `python tools/fb_screenshot.py shots/` renders a set of scenes to PNGs (headless with `xvfb-run -a`).
+
 ## What makes it play like a real shootout
 
 **Taking the kick**
