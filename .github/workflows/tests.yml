@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The shootout tests import PyOpenGL (needs libGL) and the football input
+      # tests import panda3d; neither opens a window
+      - run: sudo apt-get update && sudo apt-get install -y libgl1
+      - run: pip install pytest pyflakes PyOpenGL panda3d
+      - run: python -m pyflakes shootout/rules.py shootout/physics.py shootout/keeper.py shootout/kick.py shootout/ai.py shootout/game.py shootout/stats.py shootout/audio.py shootout/modes.py shootout/scenarios.py shootout/controls.py shootout/phone.py shootout/gamepad.py shootout/squad.py shootout/winprob.py shootout/commentary.py shootout/report.py shootout/achievements.py shootout/net.py tests tools
+      - run: python -m pytest -q
+      - run: python -m pyflakes football/sim
+      # Soak test: CPU v CPU matches flat out; fails on any crash or stuck state
+      - run: python tools/sim_matches.py -n 12 --format cage --jobs 2
+      - run: python tools/sim_matches.py -n 4 --format full --jobs 2
