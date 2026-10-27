@@ -6,6 +6,18 @@ MODES = ['broadcast', 'wide', 'player', 'end']
 LABELS = {'broadcast': 'Broadcast', 'wide': 'Tactical', 'player': 'Player (third person)', 'end': 'End to end'}
 
 
+def _spring(x, v, target, omega, dt):
+    """Move x towards target with velocity v (both lists, updated in place)."""
+    f = 1.0 + 2.0 * dt * omega
+    oo = omega * omega
+    hoo = dt * oo
+    det = 1.0 / (f + dt * hoo)
+    for i in range(len(x)):
+        nx = (f * x[i] + dt * v[i] + dt * hoo * target[i]) * det
+        v[i] = (v[i] + hoo * (target[i] - x[i])) * det
+        x[i] = nx
+
+
 class Camera:
     def __init__(self, base, pitch, mode='broadcast'):
         self.base = base
@@ -17,6 +29,8 @@ class Camera:
         self.shake = 0.0
         self.t = 0.0
         self.attack = 1
+        self.vpos = [0.0, 0.0, 0.0]
+        self.vlook = [0.0, 0.0, 0.0]
         base.camLens.set_near_far(0.3, 900)
 
     def ground_axes(self):
@@ -31,6 +45,8 @@ class Camera:
         self._target(ball, focus, 1.0)
         self.pos = list(self._tp)
         self.look = list(self._tl)
+        self.vpos = [0.0, 0.0, 0.0]
+        self.vlook = [0.0, 0.0, 0.0]
 
     def _target(self, ball, focus, vel_lead):
         pt = self.pitch
@@ -58,15 +74,23 @@ class Camera:
             self._tp = (px - a * 9.0, py * 0.9, 4.6)
             self._tl = (px + a * 7.0, py * 0.8 + (by - py) * 0.3, 0.6)
 
-    def update(self, dt, ball, focus=None, attack=1, zoom=1.0):
+    def update(self, dt, ball, focus=None, attack=1, zoom=1.0, ball_vel=None):
         self.t += dt
         self.attack = attack
         self._target(ball, focus, 1.0)
-        k = min(1.0, dt * (3.2 if self.mode != 'player' else 4.5))
-        kl = min(1.0, dt * 4.5)
-        for i in range(3):
-            self.pos[i] += (self._tp[i] - self.pos[i]) * k
-            self.look[i] += (self._tl[i] - self.look[i]) * kl
+        tl = list(self._tl)
+        if ball_vel is not None and self.mode != 'player':
+            # A camera operator leads the play: aim a little ahead of a moving ball,
+            # and tilt up a touch to follow a high one
+            lead = 0.28 if self.mode == 'broadcast' else 0.2
+            tl[0] += max(-6.0, min(6.0, ball_vel[0] * lead))
+            tl[1] += max(-4.0, min(4.0, ball_vel[1] * lead * 0.6))
+            tl[2] += min(2.5, max(0.0, ball[2] - 0.5) * 0.35)
+        # Critically damped springs: they ease in and out instead of jerking
+        wp = 2.6 if self.mode != 'player' else 4.0
+        wl = 3.6 if self.mode != 'player' else 5.0
+        _spring(self.pos, self.vpos, self._tp, wp, dt)
+        _spring(self.look, self.vlook, tl, wl, dt)
         self._apply(zoom)
 
     def _apply(self, zoom=1.0):
@@ -76,6 +100,10 @@ class Camera:
             self.shake = max(0.0, self.shake - 0.016)
             sx = math.sin(self.t * 53) * self.shake * 0.25
             sy = math.cos(self.t * 47) * self.shake * 0.25
+        if self.mode in ('broadcast', 'wide'):
+            # The faint drift of a camera on a head, not a computer's dead-still view
+            sx += math.sin(self.t * 0.71) * 0.05 + math.sin(self.t * 1.9) * 0.012
+            sy += math.sin(self.t * 0.53 + 1.0) * 0.035
         c.set_pos(self.pos[0] + sx, self.pos[1], self.pos[2] + sy)
         c.look_at(self.look[0], self.look[1], self.look[2])
         self.base.camLens.set_fov(self.fov / zoom)

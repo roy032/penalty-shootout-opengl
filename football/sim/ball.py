@@ -13,6 +13,7 @@ ROLL_DAMP = 0.22        # extra speed-proportional loss when rolling
 BOUNCE = 0.56           # vertical restitution off the turf
 POST_BOUNCE = 0.65
 WALL_BOUNCE = 0.62
+SPIN_GRIP = 0.3         # share of the ball's surface spin turned into pace at a bounce
 
 
 def roll_distance(v0, v1=0.0):
@@ -171,6 +172,9 @@ class Ball:
                 keep = self.skid
                 v[0] *= keep
                 v[1] *= keep
+                # Spin grips the turf: topspin kicks the ball on, backspin checks it
+                v[0] += SPIN_GRIP * RADIUS * w[1]
+                v[1] -= SPIN_GRIP * RADIUS * w[0]
                 w[0] *= 0.5
                 w[1] *= 0.5
                 w[2] *= 0.6

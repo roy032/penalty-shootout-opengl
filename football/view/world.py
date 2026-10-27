@@ -58,6 +58,11 @@ class World:
     def _fallback(self):
         self.lighting = None
         self.base.render.clear_shader()
+        S.deactivate()
+        for n in self.base.render.find_all_matches('**/=skinned'):
+            # Panda's generated shaders can still bend the players
+            n.clear_shader()
+            n.set_shader_auto()
         self.grass.clear_shader()
         self.grass.set_color(0.22, 0.48, 0.17, 1)
         self.grass.set_tex_scale(TextureStage.get_default(), 30, 20)

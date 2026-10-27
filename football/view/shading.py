@@ -35,15 +35,32 @@ out vec2 v_uv;
 uniform struct { sampler2DShadow shadowMap; mat4 shadowViewMatrix; } u_sun;
 out vec4 v_shadow;
 #endif
+#if SKINNED
+// The footballers are skinned on the graphics card: each vertex follows up to
+// four joints of the skeleton
+uniform mat4 p3d_TransformTable[32];
+in vec4 transform_weight;
+in uvec4 transform_index;
+#endif
 void main() {
-    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
-    vec4 w = p3d_ModelMatrix * p3d_Vertex;
+    vec4 vtx = p3d_Vertex;
+    vec3 nrm = p3d_Normal;
+#if SKINNED
+    mat4 skin = p3d_TransformTable[transform_index.x] * transform_weight.x
+              + p3d_TransformTable[transform_index.y] * transform_weight.y
+              + p3d_TransformTable[transform_index.z] * transform_weight.z
+              + p3d_TransformTable[transform_index.w] * transform_weight.w;
+    vtx = skin * vtx;
+    nrm = mat3(skin) * nrm;
+#endif
+    gl_Position = p3d_ModelViewProjectionMatrix * vtx;
+    vec4 w = p3d_ModelMatrix * vtx;
     v_wpos = w.xyz;
-    v_wnorm = mat3(p3d_ModelMatrix) * p3d_Normal;
+    v_wnorm = mat3(p3d_ModelMatrix) * nrm;
     v_color = p3d_Color;
     v_uv = p3d_MultiTexCoord0;
 #if SHADOWS
-    v_shadow = u_sun.shadowViewMatrix * (p3d_ModelViewMatrix * p3d_Vertex);
+    v_shadow = u_sun.shadowViewMatrix * (p3d_ModelViewMatrix * vtx);
 #endif
 }
 """
@@ -374,16 +391,41 @@ void main() {
 _programs = {}
 
 
-def _program(name, vert, frag, shadows=False):
-    key = (name, shadows)
+def _program(name, vert, frag, shadows=False, skinned=False):
+    key = (name, shadows, skinned)
     if key not in _programs:
-        defs = '#define SHADOWS %d\n' % (1 if shadows else 0)
+        defs = '#define SHADOWS %d\n#define SKINNED %d\n' % (1 if shadows else 0, 1 if skinned else 0)
         _programs[key] = Shader.make(Shader.SL_GLSL, _HEAD + defs + vert, _HEAD + defs + frag)
     return _programs[key]
 
 
 def lit_shader(shadows):
     return _program('lit', _VERT, _LIGHT + _LIT_FRAG, shadows)
+
+
+def skinned_shader(shadows):
+    return _program('lit', _VERT, _LIGHT + _LIT_FRAG, shadows, skinned=True)
+
+
+def use_skinning(np):
+    """Draw a footballer with the skinned program while the scene uses ours (if not,
+    Panda deforms the mesh on the processor). Tagged so a fallback can undo it."""
+    from panda3d.core import ShaderAttrib
+    if _active is None:
+        return False
+    attr = ShaderAttrib.make(skinned_shader(_active))
+    np.set_attrib(attr.set_flag(ShaderAttrib.F_hardware_skinning, True))
+    np.set_tag('skinned', '1')
+    return True
+
+
+# Whether our lighting is on, and with shadows (set by Lighting, cleared by a fallback)
+_active = None
+
+
+def deactivate():
+    global _active
+    _active = None
 
 
 def grass_shader(shadows):
@@ -402,9 +444,10 @@ def all_programs():
 MATERIALS = {
     'default': ((0.08, 16.0, 0.15, 0.1), (0.0, 0.0, 0.0, 0.0)),
     'shirt': ((0.12, 14.0, 0.35, 0.3), (0.8, 0.0, 0.35, 0.0)),
-    'skin': ((0.22, 22.0, 0.3, 0.45), (0.8, 0.0, 0.1, 0.0)),
+    'skin': ((0.1, 14.0, 0.16, 0.45), (0.8, 0.0, 0.08, 0.0)),
     'boots': ((0.6, 60.0, 0.3, 0.1), (0.8, 0.0, 0.0, 0.0)),
-    'hair': ((0.25, 30.0, 0.25, 0.3), (0.0, 0.0, 0.2, 0.0)),
+    'hair': ((0.12, 18.0, 0.2, 0.3), (0.5, 0.0, 0.15, 0.0)),
+    'eye': ((0.9, 90.0, 0.1, 0.2), (0.0, 0.03, 0.0, 0.0)),
     'ball': ((0.55, 48.0, 0.3, 0.2), (0.6, 0.0, 0.0, 0.0)),
     'metal': ((0.9, 70.0, 0.35, 0.1), (0.0, 0.0, 0.0, 0.0)),
     'goal': ((0.7, 40.0, 0.3, 0.25), (0.0, 0.08, 0.0, 0.0)),
@@ -441,6 +484,8 @@ class Lighting:
         self.ok = True
         r = base.render
         r.set_shader(lit_shader(self.shadows))
+        global _active
+        _active = self.shadows
         a, b = MATERIALS['default']
         r.set_shader_input('u_mat', Vec4(*a))
         r.set_shader_input('u_mat2', Vec4(*b))

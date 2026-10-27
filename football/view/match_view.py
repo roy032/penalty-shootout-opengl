@@ -35,6 +35,7 @@ class MatchView:
         self.weather = WeatherFx(base, self.world, match.weather, quality)
         self.t = 0.0
         self.excite = 0.0
+        self._contact_shadows(quality)
         self._markers()
         self._guides()
         self.cam.snap(match.ball.pos, None)
@@ -80,6 +81,51 @@ class MatchView:
         self.ball_spot.set_shader_off()
         self.ball_spot.set_depth_offset(3)
         self.ball_spot.set_bin('transparent', 21)
+
+    def _contact_shadows(self, quality):
+        """Soft dark patches where the players and the ball meet the grass: the
+        ambient light they block. Stronger on Low, which has no shadow maps."""
+        soft = T.radial(64, (0, 0, 0), 1.6)
+        self.shadow_k = 1.0 if quality == 'low' else 0.6
+        self.contact = {}
+        for key in self.models:
+            body = self._flat(1.0, 1.0, soft, (0, 0, 0), 0.0, 1)
+            feet = [self._flat(0.34, 0.34, soft, (0, 0, 0), 0.0, 1) for _ in range(2)]
+            for n in [body] + feet:
+                n.set_depth_offset(2)
+                n.show()
+            self.contact[key] = (body, feet)
+        self.ball_contact = self._flat(0.42, 0.42, soft, (0, 0, 0), 0.0, 1)
+        self.ball_contact.show()
+
+    def _sync_contact(self, ball):
+        r = self.base.render
+        k = self.shadow_k
+        for key, (body, feet) in self.contact.items():
+            mdl = self.models[key]
+            if mdl.root.is_hidden():
+                body.hide()
+                for f in feet:
+                    f.hide()
+                continue
+            p = mdl.pelvis.get_pos(r)
+            hz = max(0.0, p[2])
+            body.show()
+            body.set_pos(p[0], p[1], 0.012)
+            body.set_h(mdl.root.get_h())
+            # Stretched along the body when he is on the grass
+            low = max(0.0, min(1.0, (0.75 - hz) / 0.5))
+            body.set_scale(0.75 + 0.5 * low, 0.75 + 1.1 * low, 1)
+            body.set_alpha_scale(k * 0.42 * max(0.0, min(1.0, 1.6 - hz * 0.9)))
+            for f, a in zip(feet, mdl.ankles):
+                q = a.get_pos(r)
+                f.show()
+                f.set_pos(q[0], q[1], 0.013)
+                f.set_alpha_scale(k * 0.75 * max(0.0, 1.0 - max(0.0, q[2] - 0.08) / 0.22))
+        h = max(0.0, ball[2] - 0.11)
+        self.ball_contact.set_pos(ball[0], ball[1], 0.014)
+        self.ball_contact.set_alpha_scale(k * 0.7 * max(0.0, 1.0 - h / 0.6))
+        self.ball_contact.set_scale(1.0 + h * 0.8)
 
     def _flat(self, sx, sy, tex, col, alpha, bin_order):
         n = G.plane(sx, sy).node()
@@ -249,7 +295,7 @@ class MatchView:
         if snapshot is None:
             b = m.ball
             ball = tuple(b.pos)
-            self.ball.pose(ball, b.roll_axis, b.roll_angle)
+            self.ball.pose(ball, b.roll_axis, b.roll_angle, b.spin, dt)
             for p in players:
                 mdl = self.models[(p.team.idx, p.idx)]
                 if p.sent_off:
@@ -260,11 +306,12 @@ class MatchView:
                          p.dive_dir, p.state_len, holding=m.ball.holder is p, t=self.t)
         else:
             ball, axis, angle, rows = snapshot
-            self.ball.pose(ball, axis, angle)
+            self.ball.pose(ball, axis, angle, None, dt)
             for p, row in zip(players, rows):
                 x, y, z, facing, state, anim, st, phase, speed, dive = row
                 mdl = self.models[(p.team.idx, p.idx)]
                 mdl.pose(x, y, z, facing, state, anim, st, phase, speed, dive, 0.5, t=self.t)
+        self._sync_contact(ball)
         # Ball height marker
         self.ball_spot.set_pos(ball[0], ball[1], 0.02)
         hgt = max(0.0, ball[2] - 0.11)
@@ -316,7 +363,7 @@ class MatchView:
                 r = m.restart
                 self.cam.penalty(dt, r['pos'], r['team'].attack, ball)
             else:
-                self.cam.update(dt, ball, focus, attack, zoom)
+                self.cam.update(dt, ball, focus, attack, zoom, m.ball.vel)
         self.weather.update(dt, self.base.camera.get_pos(self.base.render))
 
     def destroy(self):
