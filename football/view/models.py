@@ -57,7 +57,7 @@ class Footballer:
         lk = fb.look or {}
         cols = CH.look_colours(lk)
         # The shootout's skin tones are a touch pale under the stadium shader
-        cols['skin'] = tuple(c * k for c, k in zip(cols['skin'], (0.96, 0.89, 0.84)))
+        cols['skin'] = tuple(c * k for c, k in zip(cols['skin'], (0.93, 0.83, 0.76)))
         h = float(lk.get('h', 1.0))
         w = float(lk.get('w', 1.0))
         seed = _seed(fb.name, fb.number)
@@ -86,7 +86,8 @@ class Footballer:
         parts = builder.build()
         textures = {
             'skin': K.skin_detail(),
-            'head': K.face(spec['skin'], spec['hair_col'], spec['beard'], spec['women'], spec['iris']),
+            'head': K.face(spec['skin'], spec['hair_col'], spec['beard'], spec['women'], spec['iris'],
+                           spec['hair']),
             'hair': K.hair_strands(), 'shirt': K.shirt(kit, fb.number, fb.name, keeper),
             'lower': K.lower_kit(kit, keeper), 'boots': K.boot_detail(),
         }
@@ -369,7 +370,7 @@ class Footballer:
             v[I['el0']] = v[I['el1']] = 55.0
             v[I['wr0']] = v[I['wr1']] = -20.0
             v[I['body_z']] = -0.13 + bounce
-            v[I['head_p']] = -18.0
+            v[I['head_p']] = -8.0
             return
         # Weight on the balls of the feet, shifting a little from foot to foot, breathing
         v[I['hip0']] = 4.0 + 2 * sway
@@ -382,11 +383,11 @@ class Footballer:
             v[I['rot%d' % i]] = 8.0
         v[I['pel_r']] = 2.5 * sway
         v[I['side']] = -1.5 * sway
-        v[I['sh0']] = 4 + br * 1.5
-        v[I['sh1']] = 4 - br * 1.5
-        v[I['sha0']] = v[I['sha1']] = 9.0
-        v[I['el0']] = v[I['el1']] = 22.0
-        v[I['lean']] = 5.0 + br * 0.8
+        v[I['sh0']] = br * 1.5
+        v[I['sh1']] = -br * 1.5
+        v[I['sha0']] = v[I['sha1']] = 8.0
+        v[I['el0']] = v[I['el1']] = 12.0
+        v[I['lean']] = 3.0 + br * 0.8
         v[I['shrug']] = br * 1.2
         v[I['head_h']] = 10 * math.sin(t * 0.37 + q * 7)
 

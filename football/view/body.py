@@ -18,6 +18,8 @@ from panda3d.core import (Character, CharacterJoint, Geom, GeomNode, GeomTriangl
                           GeomVertexArrayFormat, GeomVertexData, GeomVertexFormat, InternalName, JointVertexTransform,
                           Mat4, ModelNode, NodePath, OmniBoundingVolume, PartGroup, TransformTable)
 
+from . import kits as K
+
 # name, parent, offset from the parent in the rest pose
 SKELETON = [
     ('pelvis', None, (0.0, 0.0, 0.96)),
@@ -38,8 +40,11 @@ for _s, _x in (('L', -1), ('R', 1)):
         ('toe_' + _s, 'ankle_' + _s, (0.0, 0.13, -0.045)),
     ]
 
-HEAD_C = np.array((0.0, 0.012, 1.688))
-HEAD_R = np.array((0.081, 0.104, 0.116))
+HEAD_C = np.array((0.0, 0.012, 1.682))
+HEAD_R = np.array((0.089, 0.108, 0.119))
+# Texture v of the chin, mouth, nose, eyes, brows, hairline and crown, and where each sits on the skull
+_HEAD_V = [0.0, 0.22, 0.345, 0.42, 0.548, 0.6, 0.705, 1.0]
+_HEAD_W = [0.0, 0.21, 0.335, 0.4, 0.5, 0.555, 0.74, 1.0]
 
 
 def skeleton(w=1.0, women=False):
@@ -291,9 +296,9 @@ class BodyBuilder:
         # Shorts round the hips: z, cx, cy, rx, ryf, ryb, squareness
         k = [(0.80, 0, 0.0, 0.06, 0.04, 0.04, 2.0),
              (0.83, 0, 0.0, 0.135 * hip, 0.075, 0.085, 2.2),
-             (0.88, 0, 0.0, 0.178 * hip, 0.098, 0.125, 2.4),
-             (0.95, 0, 0.0, 0.18 * hip, 0.1, 0.122, 2.5),
-             (1.01, 0, 0.0, 0.17 * hip, 0.096, 0.108, 2.5),
+             (0.88, 0, 0.0, 0.168 * hip, 0.094, 0.118, 2.4),
+             (0.95, 0, 0.0, 0.172 * hip, 0.097, 0.116, 2.5),
+             (1.01, 0, 0.0, 0.166 * hip, 0.094, 0.106, 2.5),
              (1.03, 0, 0.0, 0.165, 0.093, 0.103, 2.5)]
         k = [(z, cx, cy, rx * w, rf * w, rb * w, q) for z, cx, cy, rx, rf, rb, q in k]
 
@@ -312,8 +317,8 @@ class BodyBuilder:
              (1.39, 0, 0.0, 0.198 * sh, 0.118, 0.116, 2.7),
              (1.43, 0, -0.008, 0.19 * sh, 0.1, 0.108, 2.6),
              (1.462, 0, -0.012, 0.165 * sh, 0.082, 0.092, 2.5),
-             (1.485, 0, -0.012, 0.095, 0.068, 0.07, 2.1),
-             (1.50, 0, -0.012, 0.062, 0.056, 0.056, 2.0)]
+             (1.485, 0, -0.012, 0.1, 0.072, 0.074, 2.1),
+             (1.50, 0, -0.012, 0.07, 0.062, 0.064, 2.0)]
         k = [(z, cx, cy, rx * w, rf * w, rb * w, q) for z, cx, cy, rx, rf, rb, q in k]
 
         def shirt_uv(th, z):
@@ -322,8 +327,8 @@ class BodyBuilder:
         self.loft('shirt', k, wts, shirt_uv, (1, 1, 1, 1), seg=self.seg + 8)
         # Collar band, standing a touch proud of the shirt
         trim = self.s['trim'] + (1,)
-        k = [(1.478, 0, -0.012, 0.075, 0.068, 0.068, 2.0), (1.492, 0, -0.012, 0.07, 0.064, 0.064, 2.0),
-             (1.505, 0, -0.012, 0.062, 0.058, 0.058, 2.0), (1.51, 0, -0.012, 0.057, 0.053, 0.053, 2.0)]
+        k = [(1.478, 0, -0.012, 0.08, 0.07, 0.072, 2.0), (1.492, 0, -0.012, 0.076, 0.067, 0.069, 2.0),
+             (1.505, 0, -0.012, 0.069, 0.062, 0.064, 2.0), (1.51, 0, -0.012, 0.064, 0.058, 0.06, 2.0)]
         k = [(z, cx, cy, rx * w, rf * w, rb * w, q) for z, cx, cy, rx, rf, rb, q in k]
         self.loft('trim', k, [(1.5, {'chest': 0.7, 'neck': 0.3})], lambda th, z: (th * 0, z * 0), trim, sub=1)
 
@@ -392,11 +397,11 @@ class BodyBuilder:
         self.loft('lower', socks, wts, sock_uv, (1, 1, 1, 1))
         # Shorts leg: loose round the thigh, hem at mid-thigh
         hem = 0.665 if not s['keeper'] else 0.64
-        sk = [(0.95, 0.002, 0.0, 0.104, 0.1, 0.11, 2.2),
-              (0.9, 0.006, 0.0, 0.106, 0.104, 0.11, 2.2),
-              (0.78, 0.004, 0.0, 0.1, 0.1, 0.096, 2.2),
-              (hem + 0.005, 0.0, 0.0, 0.097, 0.097, 0.09, 2.2),
-              (hem, 0.0, 0.0, 0.095, 0.095, 0.088, 2.2),
+        sk = [(0.95, 0.002, 0.0, 0.098, 0.095, 0.104, 2.2),
+              (0.9, 0.004, 0.0, 0.098, 0.096, 0.102, 2.2),
+              (0.78, 0.002, 0.0, 0.09, 0.091, 0.087, 2.2),
+              (hem + 0.005, 0.0, 0.0, 0.087, 0.088, 0.082, 2.2),
+              (hem, 0.0, 0.0, 0.085, 0.086, 0.08, 2.2),
               (hem + 0.012, 0.0, 0.0, 0.074, 0.078, 0.066, 2.1)]
 
         def shorts_uv(th, z):
@@ -526,13 +531,13 @@ class BodyBuilder:
         gloves = s['keeper']
         g = 1.25 if gloves else 1.0
         # A relaxed hand: palm facing in, fingers curled forward a little
-        rel = [(0.02, 0.0, 0.0, 0.02, 0.024, 0.024, 2.0),
-               (-0.01, 0.0, 0.002, 0.016, 0.03, 0.026, 2.2),
-               (-0.05, -0.002, 0.006, 0.017, 0.042, 0.036, 2.6),
-               (-0.09, -0.004, 0.012, 0.016, 0.04, 0.034, 2.6),
-               (-0.13, -0.008, 0.024, 0.013, 0.034, 0.026, 2.4),
-               (-0.165, -0.012, 0.038, 0.011, 0.026, 0.018, 2.2),
-               (-0.185, -0.014, 0.05, 0.004, 0.012, 0.008, 2.0)]
+        rel = [(0.02, 0.0, 0.0, 0.021, 0.024, 0.024, 2.0),
+               (-0.01, 0.0, 0.002, 0.019, 0.028, 0.025, 2.2),
+               (-0.045, -0.002, 0.006, 0.02, 0.036, 0.031, 2.4),
+               (-0.08, -0.004, 0.012, 0.019, 0.034, 0.029, 2.4),
+               (-0.112, -0.007, 0.02, 0.017, 0.028, 0.023, 2.2),
+               (-0.138, -0.01, 0.028, 0.013, 0.02, 0.016, 2.0),
+               (-0.152, -0.011, 0.033, 0.004, 0.008, 0.006, 2.0)]
         keys = [(zw + dz * g, x + cx * sx, cy * g, rx * g, rf * g, rb * g, q) for dz, cx, cy, rx, rf, rb, q in rel]
         col = (s['gloves'] if gloves else s['skin']) + (1,)
         part = 'boots' if gloves else 'skin'
@@ -553,8 +558,9 @@ class BodyBuilder:
     def neck(self):
         s = self.s
         w = 0.88 if s['women'] else 1.0
-        keys = [(1.44, 0, -0.012, 0.056, 0.052, 0.056, 2.0), (1.52, 0, -0.008, 0.052, 0.05, 0.054, 2.0),
-                (1.6, 0, -0.004, 0.05, 0.048, 0.052, 2.0), (1.66, 0, -0.008, 0.05, 0.05, 0.05, 2.0)]
+        keys = [(1.44, 0, -0.012, 0.064, 0.056, 0.062, 2.0), (1.5, 0, -0.01, 0.06, 0.054, 0.058, 2.0),
+                (1.54, 0, -0.008, 0.062, 0.055, 0.06, 2.0),
+                (1.59, 0, -0.004, 0.06, 0.055, 0.06, 2.0), (1.645, 0, -0.008, 0.058, 0.054, 0.058, 2.0)]
         keys = [(z, cx, cy, rx * w * s['w'] ** 0.5, rf * w * s['w'] ** 0.5, rb * w * s['w'] ** 0.5, q)
                 for z, cx, cy, rx, rf, rb, q in keys]
         wts = [(1.62, {'head': 1.0}), (1.56, {'neck': 1.0}), (1.48, {'chest': 0.6, 'neck': 0.4})]
@@ -564,37 +570,35 @@ class BodyBuilder:
         """Points on the head for texture coordinates U (longitude, face at 0.25)
         and V (chin 0 .. crown 1), pushed out by ``offset``."""
         th = U * 2 * math.pi
-        ph = (V - 0.5) * math.pi
+        # Features are laid out in texture space; this stretch puts them at real
+        # proportions on the skull: eyes at half height, a full forehead, a short jaw
+        ph = (np.interp(V, _HEAD_V, _HEAD_W) - 0.5) * math.pi
         d = np.stack([np.cos(th) * np.cos(ph), np.sin(th) * np.cos(ph), np.sin(ph)], axis=-1)
         r = 1.0 / np.sqrt(((d / HEAD_R) ** 2).sum(-1))
         du = (U - 0.25 + 0.5) % 1.0 - 0.5          # -0.5..0.5, 0 at the face
         front = np.clip(np.sin(th), 0, 1)
         women = self.s['women']
         f = 0.0
-        # Brow ridge and eye sockets
-        f += 0.006 * np.exp(-((du / 0.09) ** 2 + ((V - 0.6) / 0.025) ** 2)) * (0.6 if women else 1.0)
+        # A clean, simple face: a soft brow, a small nose, gentle lips and chin
+        f += 0.005 * np.exp(-((du / 0.1) ** 2 + ((V - 0.61) / 0.03) ** 2)) * (0.5 if women else 1.0)
         for e in (-0.068, 0.068):
-            f -= 0.006 * np.exp(-(((du - e) / 0.035) ** 2 + ((V - 0.548) / 0.03) ** 2))
-        # Cheekbones
+            f -= 0.0025 * np.exp(-(((du - e) / 0.035) ** 2 + ((V - 0.55) / 0.03) ** 2))
         for e in (-0.1, 0.1):
-            f += 0.005 * np.exp(-(((du - e) / 0.04) ** 2 + ((V - 0.47) / 0.04) ** 2))
-        # Nose: bridge to tip, then back in under the nostrils
+            f += 0.004 * np.exp(-(((du - e) / 0.045) ** 2 + ((V - 0.46) / 0.045) ** 2))
         nv = np.clip((0.56 - V) / 0.13, 0, 1)
-        nose_h = (0.004 + 0.022 * nv ** 1.3) * _smoothstep(0.395, 0.425, V)
-        nose_w = 0.012 + 0.016 * nv
-        f += nose_h * np.exp(-(du / nose_w) ** 2) * (V < 0.58) * (0.85 if women else 1.0)
-        # Lips and chin
-        f += 0.006 * np.exp(-((du / 0.04) ** 2 + ((V - 0.355) / 0.016) ** 2))
-        f += 0.005 * np.exp(-((du / 0.035) ** 2 + ((V - 0.335) / 0.012) ** 2))
-        f -= 0.003 * np.exp(-((du / 0.04) ** 2 + ((V - 0.346) / 0.005) ** 2))
-        f += 0.006 * np.exp(-((du / 0.05) ** 2 + ((V - 0.22) / 0.04) ** 2)) * (0.5 if women else 1.0)
+        nose_h = (0.003 + 0.014 * nv ** 1.5) * _smoothstep(0.405, 0.43, V)
+        nose_w = 0.013 + 0.013 * nv
+        f += nose_h * np.exp(-(du / nose_w) ** 2) * (V < 0.58) * (0.8 if women else 1.0)
+        f += 0.0035 * np.exp(-((du / 0.035) ** 2 + ((V - 0.355) / 0.014) ** 2))
+        f += 0.003 * np.exp(-((du / 0.032) ** 2 + ((V - 0.338) / 0.012) ** 2))
+        f += 0.004 * np.exp(-((du / 0.055) ** 2 + ((V - 0.24) / 0.045) ** 2)) * (0.5 if women else 1.0)
         P = d * (r + f * front ** 0.5 + offset)[..., None]
-        # The jaw narrows to the chin; the back of the skull tucks in above the neck
-        low = _smoothstep(0.45, 0.12, V)
-        P[..., 0] *= 1 - (0.2 if not women else 0.26) * low ** 1.3
+        # The jaw narrows a little to a rounded chin; the back of the skull tucks in above the neck
+        low = _smoothstep(0.42, 0.1, V)
+        P[..., 0] *= 1 - (0.13 if not women else 0.19) * low ** 1.5
         back = np.clip(-np.sin(th), 0, 1)
-        P[..., 1] *= 1 - 0.28 * low * back
-        P[..., 1] += 0.012 * low * front * (V < 0.3)
+        P[..., 1] *= 1 - 0.26 * low * back
+        P[..., 1] += 0.006 * low * front * (V < 0.3)
         # A flatter face and sides
         P[..., 1] *= 1 - 0.05 * front * _smoothstep(0.35, 0.65, V)
         return P + HEAD_C
@@ -654,17 +658,14 @@ class BodyBuilder:
         style = s['hair']
         hair = np.array(s['hair_col'] + (1,))
         rows, seg = (26, 40) if self.sub >= 3 else (16, 24)
-        V = np.linspace(0.2, 1.0, rows + 1)[:, None].repeat(seg + 1, 1)
         U = np.linspace(0.0, 1.0, seg + 1)[None, :].repeat(rows + 1, 0)
         du = np.abs((U - 0.25 + 0.5) % 1.0 - 0.5)         # 0 face .. 0.5 back
         head_w = {'head': 1.0}
         if style != 'bald':
-            # Hairline: low over the forehead, up round the temples, down to the nape
-            line = np.interp(du, [0.0, 0.08, 0.14, 0.2, 0.24, 0.3, 0.5], [0.705, 0.69, 0.655, 0.6, 0.53, 0.47, 0.34])
-            if style in ('long', 'braids'):
-                line = np.interp(du, [0.0, 0.08, 0.14, 0.2, 0.3, 0.5], [0.71, 0.69, 0.64, 0.5, 0.3, 0.22])
-            if s['women'] and style not in ('buzz',):
-                line = np.minimum(line, np.interp(du, [0.0, 0.12, 0.2, 0.3, 0.5], [0.72, 0.66, 0.5, 0.32, 0.24]))
+            # Rows follow the hairline, packed close at the edge, so the edge is one clean row
+            line = K.hairline(du, style, s['women'])
+            r = np.linspace(0.0, 1.0, rows + 1)[:, None] ** 1.6
+            V = (line - 0.02) + (1.0 - (line - 0.02)) * r
             m = _smoothstep(line - 0.005, line + 0.035, V)
             top = _smoothstep(0.55, 1.0, V)
             t = {'short': 0.009 + 0.008 * top, 'buzz': 0.0025, 'quiff': 0.01 + 0.006 * top, 'long': 0.012 + 0.006 * top,
@@ -694,7 +695,7 @@ class BodyBuilder:
                 hang = np.clip((0.42 - V) / 0.22, 0, 1) * np.clip((du - 0.12) / 0.1, 0, 1)
                 P[..., 2] -= hang * 0.14
                 P[..., 1] -= hang * 0.02
-            mask = V > line - 0.1
+            mask = None
             col = np.broadcast_to(hair, V.shape + (4,)).copy()
             if style in ('buzz', 'mohawk', 'r9'):
                 # Skin shows through a close crop
@@ -706,13 +707,13 @@ class BodyBuilder:
         # Extras: tails, buns and the headband
         hb = self.b.get(head_w)
         if style == 'ponytail':
-            keys = [(1.79, 0, -0.08, 0.03, 0.03, 0.03, 2.0), (1.76, 0, -0.125, 0.034, 0.034, 0.034, 2.0),
+            keys = [(1.778, 0, -0.08, 0.03, 0.03, 0.03, 2.0), (1.748, 0, -0.125, 0.034, 0.034, 0.034, 2.0),
                     (1.66, 0, -0.14, 0.026, 0.026, 0.026, 2.0), (1.56, 0, -0.13, 0.016, 0.016, 0.016, 2.0),
                     (1.52, 0, -0.12, 0.004, 0.004, 0.004, 2.0)]
             self.loft('hair', keys, [(1.7, head_w), (1.56, {'head': 0.5, 'neck': 0.5})],
                       lambda th, z: (th / (2 * math.pi), z * 4), tuple(hair), seg=12)
         if style in ('bun', 'manbun'):
-            cz, cy = (1.83, -0.06) if style == 'bun' else (1.8, -0.09)
+            cz, cy = (1.818, -0.06) if style == 'bun' else (1.788, -0.09)
             th = np.linspace(0, 2 * math.pi, 13)
             ph = np.linspace(-math.pi / 2, math.pi / 2, 9)
             T, F = np.meshgrid(th, ph)
@@ -721,7 +722,7 @@ class BodyBuilder:
             grid(self.parts['hair'], P, np.stack([T / 6.28, F], -1), hair, np.full(T.shape, hb), center=c)
         if style == 'braids':
             for bx in (-0.045, -0.015, 0.015, 0.045):
-                keys = [(1.74, bx, -0.1, 0.012, 0.012, 0.012, 2.0), (1.62, bx * 1.3, -0.115, 0.011, 0.011, 0.011, 2.0),
+                keys = [(1.728, bx, -0.1, 0.012, 0.012, 0.012, 2.0), (1.62, bx * 1.3, -0.115, 0.011, 0.011, 0.011, 2.0),
                         (1.5, bx * 1.5, -0.105, 0.008, 0.008, 0.008, 2.0), (1.46, bx * 1.5, -0.1, 0.002, 0.002, 0.002, 2)]
                 self.loft('hair', keys, [(1.66, head_w), (1.52, {'head': 0.4, 'neck': 0.3, 'chest': 0.3})],
                           lambda th, z: (th / (2 * math.pi), z * 6), tuple(hair), seg=8)

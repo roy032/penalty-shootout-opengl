@@ -333,13 +333,27 @@ def _gauss(U, V, cu, cv, su, sv):
     return np.exp(-((du / su) ** 2 + ((V - cv) / sv) ** 2))
 
 
-def face(skin, hair, beard=None, women=False, iris=(0.25, 0.15, 0.08)):
+def hairline(du, style, women):
+    """Texture v of the hairline at ``du`` (0 at the middle of the face, 0.5 at the back):
+    low over the forehead, up round the temples, down to the nape."""
+    line = np.interp(du, [0.0, 0.08, 0.14, 0.2, 0.24, 0.3, 0.5], [0.705, 0.69, 0.655, 0.6, 0.53, 0.47, 0.34])
+    if style in ('long', 'braids'):
+        line = np.interp(du, [0.0, 0.08, 0.14, 0.2, 0.3, 0.5], [0.71, 0.69, 0.64, 0.5, 0.3, 0.22])
+    if women and style not in ('buzz',):
+        line = np.minimum(line, np.interp(du, [0.0, 0.12, 0.2, 0.3, 0.5], [0.72, 0.66, 0.5, 0.32, 0.24]))
+    return line
+
+
+CROPPED = ('buzz', 'mohawk', 'r9')
+
+
+def face(skin, hair, beard=None, women=False, iris=(0.25, 0.15, 0.08), style='short'):
     """Head texture, wrapped round the head mesh: u = longitude with the face
     at 0.25, v = latitude from the chin (0) to the crown (1).
 
     Brows, lips, the stubble and a little colour in the cheeks; the eyes and
     nose are modelled."""
-    key = (skin, hair, beard, women, iris)
+    key = (skin, hair, beard, women, iris, style)
     if key in _face_cache:
         return _face_cache[key]
     rng = _rng('face', key)
@@ -364,67 +378,72 @@ def face(skin, hair, beard=None, women=False, iris=(0.25, 0.15, 0.08)):
         g = _gauss(U, V, cu, 0.45, 0.045, 0.05)[..., None]
         img *= 1 + (blush - 1) * g
     img *= 1 + (blush - 1) * _gauss(U, V, 0.25, 0.44, 0.02, 0.04)[..., None]
-    # Eye sockets a touch darker, and the upper lids
+    # A soft shade under the brow and under the nose
     for cu in (0.25 - 0.068, 0.25 + 0.068):
-        img *= 1 - 0.2 * _gauss(U, V, cu, 0.55, 0.04, 0.03)[..., None]
-        img *= 1 - 0.3 * _gauss(U, V, cu, 0.565, 0.028, 0.006)[..., None]
-    # Eyes: an almond of white, the iris and pupil, a dark lash line above
-    iris = np.array(iris, dtype=np.float32)
-    white = np.array((0.88, 0.86, 0.82), dtype=np.float32)
+        img *= 1 - 0.12 * _gauss(U, V, cu, 0.575, 0.035, 0.012)[..., None]
+    img *= 1 - 0.18 * _gauss(U, V, 0.25, 0.418, 0.022, 0.007)[..., None]
+    # Eyes, drawn clean and a little large so they read from the game camera:
+    # an almond of white, a big dark iris, a bold lash line on top
+    iris = np.array(iris, dtype=np.float32) * 0.75
+    white = np.array((0.93, 0.92, 0.9), dtype=np.float32)
+    lash_c = np.array((0.05, 0.035, 0.03), dtype=np.float32)
     for side in (-1, 1):
         cu = 0.25 + side * 0.068
-        box = _box(U, V, cu - 0.034, cu + 0.034, 0.525, 0.575)
+        box = _box(U, V, cu - 0.04, cu + 0.04, 0.515, 0.585)
         Ue, Ve, e = U[box], V[box], img[box]
         du = (Ue - cu) * side             # + towards the ear
-        x = du / 0.029
-        top = 0.0115 * np.clip(1 - x * x, 0, 1) ** 0.8 * (1 + 0.15 * x)
-        bot = 0.0085 * np.clip(1 - x * x, 0, 1) ** 0.9
+        x = du / 0.031
+        top = 0.0145 * np.clip(1 - x * x, 0, 1) ** 0.7 * (1 + 0.1 * x)
+        bot = 0.0105 * np.clip(1 - x * x, 0, 1) ** 0.9
         ok = np.abs(x) < 1
-        dv = Ve - 0.548
-        inside = np.clip(np.minimum(top - dv, dv + bot) / 0.0018, 0, 1) * ok
+        dv = Ve - 0.549
+        inside = np.clip(np.minimum(top - dv, dv + bot) / 0.0015, 0, 1) * ok
         e[...] = e * (1 - inside[..., None]) + white * inside[..., None]
         # Iris and pupil (the head is slightly squashed in v, so the circles are too)
-        rr = np.sqrt((du * 2 * math.pi * 0.081) ** 2 + (dv * math.pi * 0.116) ** 2)
-        ir = np.clip((0.0058 - rr) / 0.0006, 0, 1) * inside
-        ring = 0.7 + 0.3 * np.clip(rr / 0.0058, 0, 1)
+        rr = np.sqrt((du * 2 * math.pi * 0.084) ** 2 + (dv * math.pi * 0.113) ** 2)
+        ir = np.clip((0.0088 - rr) / 0.0006, 0, 1) * inside
+        ring = 0.65 + 0.35 * np.clip(rr / 0.0088, 0, 1)
         e[...] = e * (1 - ir[..., None]) + (iris * ring[..., None]) * ir[..., None]
-        pu = np.clip((0.0025 - rr) / 0.0005, 0, 1) * inside
+        pu = np.clip((0.0038 - rr) / 0.0005, 0, 1) * inside
         e[...] = e * (1 - pu[..., None]) + 0.02 * pu[..., None]
-        # A glint
-        gl = np.clip((0.0012 - np.sqrt(((du + 0.004 * side) * 0.51) ** 2 + ((dv - 0.004) * 0.364) ** 2)) / 0.0004,
+        gl = np.clip((0.0014 - np.sqrt(((du + 0.004 * side) * 0.53) ** 2 + ((dv - 0.0035) * 0.355) ** 2)) / 0.0004,
                      0, 1) * inside
-        e[...] = e * (1 - gl[..., None] * 0.8) + 0.8 * gl[..., None]
-        # Lids: shadow under the brow, lash line on top, a softer one below
-        lash = np.clip((0.0022 - np.abs(dv - top)) / 0.0009, 0, 1) * ok
-        e *= (1 - 0.85 * lash)[..., None]
-        low = np.clip((0.0012 - np.abs(dv + bot)) / 0.0008, 0, 1) * ok
-        e *= (1 - 0.35 * low)[..., None]
-        lid = np.clip((dv - top) / 0.002, 0, 1) * np.clip((top + 0.009 - dv) / 0.004, 0, 1) * ok
-        e *= (1 - 0.12 * lid)[..., None]
-    # Brows
-    brow_c = hair * 0.7 + skin * 0.1
-    if _lum(hair) > 0.75:
-        brow_c = skin * 0.55
-    box = _box(U, V, 0.12, 0.38, 0.56, 0.65)
+        e[...] = e * (1 - gl[..., None] * 0.85) + 0.9 * gl[..., None]
+        # The lash line: thick on top, flicking out at the corner
+        flick = np.clip((x - 0.75) / 0.3, 0, 1)
+        lash = np.clip((0.0028 + 0.001 * flick - np.abs(dv - top - 0.0008 + 0.002 * flick)) / 0.0009, 0, 1) * \
+            (np.abs(x) < 1.12)
+        e[...] = e * (1 - 0.9 * lash[..., None]) + lash_c * 0.9 * lash[..., None]
+        low = np.clip((0.001 - np.abs(dv + bot)) / 0.0007, 0, 1) * ok
+        e *= (1 - 0.3 * low)[..., None]
+        crease = np.clip((0.0012 - np.abs(dv - top - 0.0085)) / 0.0008, 0, 1) * (np.abs(x) < 0.85)
+        e *= (1 - 0.18 * crease)[..., None]
+    # Brows: bold and simple
+    brow_c = hair * 0.55 + skin * 0.08
+    if _lum(hair) > 0.6:
+        brow_c = hair * 0.45 + skin * 0.25
+    box = _box(U, V, 0.12, 0.38, 0.56, 0.66)
     Ub, Vb, e = U[box], V[box], img[box]
     for side in (-1, 1):
         du = (Ub - 0.25) * side
-        cur = 0.6 + 0.012 * np.sin(np.clip((du - 0.025) / 0.08, 0, 1) * math.pi) - 0.012 * np.clip((du - 0.09) / 0.03, 0, 1)
-        thick = 0.008 if women else 0.012
-        b = np.clip((thick - np.abs(Vb - cur)) / 0.005, 0, 1) * np.clip((du - 0.022) / 0.01, 0, 1) * \
-            np.clip((0.118 - du) / 0.015, 0, 1)
-        e[...] = e * (1 - b[..., None] * 0.85) + brow_c * b[..., None] * 0.85
-    # Lips
-    lip = skin * np.array((0.86, 0.6, 0.58) if not dark else (0.75, 0.55, 0.55), dtype=np.float32)
+        cur = 0.604 + 0.01 * np.sin(np.clip((du - 0.02) / 0.085, 0, 1) * math.pi) \
+            - 0.012 * np.clip((du - 0.09) / 0.03, 0, 1)
+        thick = (0.0065 if women else 0.0105) * (1.15 - 0.5 * np.clip((du - 0.03) / 0.09, 0, 1))
+        b = np.clip((thick - np.abs(Vb - cur)) / 0.003, 0, 1) * np.clip((du - 0.024) / 0.008, 0, 1) * \
+            np.clip((0.116 - du) / 0.012, 0, 1)
+        e[...] = e * (1 - b[..., None] * 0.9) + brow_c * b[..., None] * 0.9
+    # Lips: close to the skin colour, a clean line between them
+    lip = skin * np.array((0.86, 0.62, 0.6) if not dark else (0.78, 0.6, 0.6), dtype=np.float32)
     if women:
-        lip = skin * np.array((0.85, 0.5, 0.52), dtype=np.float32)
+        lip = skin * np.array((0.86, 0.58, 0.6), dtype=np.float32)
     du = np.abs(U - 0.25)
-    upper = np.clip((0.006 - np.abs(V - 0.354 - 0.003 * np.cos(du / 0.04 * math.pi))) / 0.004, 0, 1)
-    lower = np.clip((0.008 - np.abs(V - 0.337)) / 0.004, 0, 1)
-    mouth = np.maximum(upper, lower) * np.clip((0.042 - du) / 0.01, 0, 1)
-    img = img * (1 - mouth[..., None]) + lip * mouth[..., None]
-    line = np.clip((0.0025 - np.abs(V - 0.346)) / 0.0015, 0, 1) * np.clip((0.04 - du) / 0.008, 0, 1)
-    img *= (1 - 0.45 * line)[..., None]
+    upper = np.clip((0.0055 - np.abs(V - 0.352 - 0.002 * np.cos(du / 0.034 * math.pi))) / 0.003, 0, 1)
+    lower = np.clip((0.008 - np.abs(V - 0.337)) / 0.003, 0, 1)
+    mouth = np.maximum(upper, lower) * np.clip((0.037 - du) / 0.01, 0, 1)
+    img = img * (1 - 0.8 * mouth[..., None]) + lip * 0.8 * mouth[..., None]
+    line = np.clip((0.0018 - np.abs(V - 0.3465 + 0.002 * (du / 0.034) ** 2)) / 0.0012, 0, 1) * \
+        np.clip((0.036 - du) / 0.008, 0, 1)
+    img *= (1 - 0.6 * line)[..., None]
     # Stubble or a beard's shadow on the jaw
     if beard in ('stubble', 'full', 'goatee'):
         amt = {'stubble': 0.45, 'full': 0.75, 'goatee': 0.35}[beard]
@@ -437,9 +456,16 @@ def face(skin, hair, beard=None, women=False, iris=(0.25, 0.15, 0.08)):
         img = img * (1 - a) + hair * 0.8 * a
     full[win] = img
     img, U, V = full, UF, VF
-    # Short hair at the temples and the back fades into the scalp
-    scalp = np.clip((V - 0.66) / 0.08, 0, 1) * (1 - np.clip((0.12 - np.abs(U - 0.25)) / 0.05, 0, 1) * 0.6)
-    img = img * (1 - scalp[..., None] * 0.35) + hair * scalp[..., None] * 0.35
+    # Paint the hair on the scalp up from the hairline, so the edge of the hair
+    # mesh, where it dips under the skin, lands on hair colour and stays clean
+    if style != 'bald':
+        du = np.abs((U - 0.25 + 0.5) % 1.0 - 0.5)
+        line = hairline(du, style, women)
+        m = np.clip((V - line + 0.004) / 0.012, 0, 1)
+        k = 0.55 if style in CROPPED else 1.0
+        if style == 'mohawk':
+            k = 0.4
+        img = img * (1 - m[..., None] * k) + hair * 0.85 * m[..., None] * k
     t = T._from_array(np.clip(img, 0, 1), 'face')
     _face_cache[key] = t
     return t
